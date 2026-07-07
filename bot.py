@@ -14,14 +14,16 @@ import asyncio
 import logging
 
 from aiohttp import web
+from telebot.types import BotCommand
 
 from config import BOT_TOKEN, WEBAPP_HOST, WEBAPP_PORT, WEBHOOK_PATH, WEBHOOK_URL
-from core import bot
+from core import bot, db
 
 # Import handler modules so their @bot.message_handler decorators register.
 # ORDER MATTERS: pyTelegramBotAPI tests handlers in registration order and
 # stops at the first match, so specific commands must be imported BEFORE
 # the catch-all anti-spam handler.
+from handlers import start_command  # noqa: F401
 from handlers import help_command  # noqa: F401
 from handlers import admin_commands  # noqa: F401
 from handlers import stats_commands  # noqa: F401
@@ -31,6 +33,20 @@ from handlers.tracking import StatsMiddleware
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("bot")
+
+
+async def _set_command_menu():
+    """Populates the little '/' menu button in Telegram clients."""
+    try:
+        await bot.set_my_commands(
+            [
+                BotCommand("start", "معرفی ربات"),
+                BotCommand("help", "راهنمای کامل"),
+                BotCommand("profile", "پروفایل کاربر (ریپلای کنید)"),
+            ]
+        )
+    except Exception as e:
+        logger.warning("Could not set command menu: %s", e)
 
 
 async def run_polling():
@@ -44,10 +60,9 @@ async def run_webhook():
     """Production mode: run an aiohttp server and let Telegram push updates to it.
 
     Assumes you're behind a reverse proxy / PaaS that terminates HTTPS
-    (Render, Railway, Fly.io, nginx, Caddy, etc.) and forwards plain HTTP to
-    this process - the common modern setup. If you're exposing this process
-    directly to the internet with your own self-signed certificate instead,
-    see pyTelegramBotAPI's webhook examples for the extra SSL context step.
+    (Render, Railway, Fly.io, nginx, Caddy, etc.). If you're exposing this
+    process directly with your own self-signed certificate instead, see
+    pyTelegramBotAPI's webhook examples for the extra SSL context step.
     """
     from telebot.types import Update
 
@@ -77,7 +92,11 @@ async def run_webhook():
 
 
 async def main():
+    logger.info("Connecting to the database...")
+    await db.connect()  # opens the asyncpg pool AND creates tables if missing
+
     bot.setup_middleware(StatsMiddleware())
+    await _set_command_menu()
     try:
         if WEBHOOK_URL:
             await run_webhook()
@@ -88,6 +107,7 @@ async def main():
             await bot.close_session()
         except Exception:
             pass  # nothing to close if no request was ever made
+        await db.close()
 
 
 if __name__ == "__main__":

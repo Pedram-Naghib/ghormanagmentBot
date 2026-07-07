@@ -2,7 +2,7 @@
 handlers/antispam.py
 ----------------------
 Centralized restrictions for "Normal" members (see utils/permissions.py for
-who counts as Normal vs VIP vs admin).
+who counts as Normal vs VIP vs admin in THIS chat).
 
 *** Single place to add new anti-spam rules. *** To add one:
     1. Write `async def _check_something(message) -> bool` (True = acted on it).
@@ -10,8 +10,7 @@ who counts as Normal vs VIP vs admin).
 
 This module MUST be imported LAST in bot.py: pyTelegramBotAPI tests handlers
 in the order they were registered and stops at the first match, so this
-catch-all has to come after every specific command handler, or it would
-swallow everything before those commands ever got a chance to run.
+catch-all has to come after every specific command handler.
 """
 
 import re
@@ -30,7 +29,7 @@ URL_REGEX = re.compile(
 )
 
 # In-memory recent-message timestamps, per chat, per user.
-# Kept in memory (not Supabase) on purpose: this is ephemeral, high-frequency
+# Kept in memory (not the DB) on purpose: this is ephemeral, high-frequency
 # rate-limiting data that doesn't need to survive a restart.
 _recent_messages: Dict[int, Dict[int, Deque[float]]] = defaultdict(lambda: defaultdict(deque))
 
@@ -127,5 +126,5 @@ async def guard_normal_members(message: Message):
     if not message.from_user or message.from_user.is_bot:
         return
 
-    if await is_normal_member(bot, db, message.chat.id, message.from_user.id):
+    if await is_normal_member(db, message.chat.id, message.from_user.id):
         await apply_normal_member_restrictions(message)

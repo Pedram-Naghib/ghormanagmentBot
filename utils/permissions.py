@@ -1,20 +1,30 @@
 """
 utils/permissions.py
 ----------------------
-Role model:
+Role model (per your spec):
 
-    Owner        -> hardcoded in .env (OWNER_USER_IDS). Can add/remove Bot Admins.
-    Bot Admin    -> stored in Supabase (`bot_admins` table, bot-wide - see
-                    "افزودن ادمین" in handlers/admin_commands.py). Can use
-                    management commands in ANY group this bot is in, even
-                    if they hold no special Telegram role in that group.
-    Group Admin  -> real Telegram admin/creator of THIS group (checked live
-                    via the Bot API - no manual list to maintain).
-    VIP          -> stored per-user in Supabase (`users.is_vip`). Exempt
-                    from anti-spam restrictions.
-    Normal       -> everyone else.
+    Global Owner  -> hardcoded in .env (OWNER_USER_IDS). Full access,
+                     every group, always. Not stored in the database.
 
-"management command access" = Owner OR Bot Admin OR Group Admin.
+    owner         -> whoever added the bot to a specific group. Auto-set
+                     the moment the bot joins (see handlers/tracking.py ->
+                     on_bot_added_to_chat). Full access, but ONLY in that
+                     group. Can appoint 'admin' and 'vip' for their group.
+
+    admin         -> appointed by that group's owner (or a Global Owner).
+                     Full access, but ONLY in that group. Cannot appoint
+                     more admins (that stays with the owner).
+
+    vip           -> exempt from anti-spam restrictions, but ONLY in that
+                     group - VIP in Group A is a plain Normal member in
+                     Group B unless Group B separately grants it.
+
+    normal        -> default for everyone else.
+
+Being a real Telegram admin/creator of a group does NOT, by itself, grant
+bot-command access. Telegram admin status is checked in exactly one place -
+the "ادعای مالکیت" bootstrap command, for groups where the bot was added
+before this role system existed and so has no recorded owner yet.
 """
 
 from telebot.async_telebot import AsyncTeleBot
@@ -25,12 +35,12 @@ from database import Database
 ADMIN_STATUSES = {"administrator", "creator"}
 
 
-def is_owner(user_id: int) -> bool:
+def is_global_owner(user_id: int) -> bool:
     return user_id in OWNER_USER_IDS
 
 
 async def is_group_admin(bot: AsyncTeleBot, chat_id: int, user_id: int) -> bool:
-    """True if the user is a real admin/creator of THIS Telegram group."""
+    """Real Telegram admin/creator status - used ONLY by the ownership-claim bootstrap."""
     try:
         member = await bot.get_chat_member(chat_id, user_id)
         return member.status in ADMIN_STATUSES
@@ -38,23 +48,29 @@ async def is_group_admin(bot: AsyncTeleBot, chat_id: int, user_id: int) -> bool:
         return False
 
 
-async def is_authorized_admin(bot: AsyncTeleBot, db: Database, chat_id: int, user_id: int) -> bool:
-    """
-    True if the user can use management commands (ban/mute/etc.) in this chat -
-    either because they're a Bot Admin (bot-wide, DB-managed, doesn't require
-    being a Telegram admin here) or a real admin of this specific group.
-    """
-    if is_owner(user_id):
+async def is_authorized_admin(db: Database, chat_id: int, user_id: int) -> bool:
+    """True if the user can use management commands in THIS chat."""
+    if is_global_owner(user_id):
         return True
-    if await db.is_bot_admin(user_id):
-        return True
-    return await is_group_admin(bot, chat_id, user_id)
+    role = await db.get_user_role(chat_id, user_id)
+    return role in ("owner", "admin")
 
 
-async def is_normal_member(bot: AsyncTeleBot, db: Database, chat_id: int, user_id: int) -> bool:
-    """A 'Normal' member is not an authorized admin and not VIP."""
-    if await is_authorized_admin(bot, db, chat_id, user_id):
+async def can_manage_chat_roles(db: Database, chat_id: int, user_id: int) -> bool:
+    """
+    True if the user can appoint/remove admins and VIPs for this chat -
+    restricted to the chat's owner (and Global Owners), deliberately NOT
+    extended to regular admins.
+    """
+    if is_global_owner(user_id):
+        return True
+    role = await db.get_user_role(chat_id, user_id)
+    return role == "owner"
+
+
+async def is_normal_member(db: Database, chat_id: int, user_id: int) -> bool:
+    """A 'Normal' member is not an authorized admin and not a VIP, in THIS chat."""
+    if await is_authorized_admin(db, chat_id, user_id):
         return False
-    if await db.is_vip(user_id):
-        return False
-    return True
+    role = await db.get_user_role(chat_id, user_id)
+    return role != "vip"

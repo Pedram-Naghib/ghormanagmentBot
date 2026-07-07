@@ -2,23 +2,20 @@
 handlers/admin_commands.py
 -----------------------------
 Management commands. Usable by (see utils/permissions.py):
-    - Owners            (hardcoded in .env -> OWNER_USER_IDS)
-    - Bot Admins        (bot-wide, stored in Supabase - "افزودن ادمین")
-    - Real Telegram admins/creators of the current group
+    - Global Owners   (hardcoded in .env -> OWNER_USER_IDS) - everywhere
+    - Group Owners    (whoever added the bot to THIS group) - this group only
+    - Group Admins    (appointed by that group's owner) - this group only
 
-Triggered as plain Persian text, sent as a REPLY to the target user's
-message (same UX as before).
+Triggered as plain Persian text, sent as a REPLY to the target user's message.
 
 --------------------------------------------------------------------
 A NOTE ON "کیک" vs "بن" (kick vs ban)
 --------------------------------------------------------------------
-Telegram only really has one underlying action here: banChatMember, which
-removes the user AND blocks them from rejoining via invite link until
-someone unbans them. A "kick" is just a ban immediately followed by an
-unban - the user is removed but can rejoin right away with a new invite
-link. Per your request, this bot keeps it simple: کیک/بن/اخراج all do the
-same thing - remove the user AND keep them banned until an admin runs
-"رفع بن". No separate "temporary kick" command.
+Telegram only has one underlying action here: banChatMember, which removes
+the user AND blocks them from rejoining via invite link until someone
+unbans them. A "kick" is just a ban immediately followed by an unban. This
+bot keeps it simple: کیک/بن/اخراج all do the same thing - remove the user
+AND keep them banned until an admin runs "رفع بن".
 """
 
 import re
@@ -27,16 +24,25 @@ import time
 from telebot.types import ChatPermissions, Message
 
 from core import bot, db
-from utils.permissions import is_authorized_admin, is_owner
+from utils.permissions import (
+    can_manage_chat_roles,
+    is_authorized_admin,
+    is_global_owner,
+    is_group_admin,
+)
 
 # --- Trigger words ---
 BAN_TRIGGERS = {"کیک", "بن", "اخراج"}
 MUTE_TRIGGERS = {"میوت", "سکوت"}
 UNBAN_PREFIXES = ("رفع بن", "آنبن", "/unban")
 VIP_TRIGGERS = {"تنظیم ویژه"}
-ADD_BOT_ADMIN_TRIGGERS = {"افزودن ادمین"}
-REMOVE_BOT_ADMIN_TRIGGERS = {"حذف ادمین"}
-LIST_BOT_ADMIN_TRIGGERS = {"لیست ادمین ها", "لیست ادمین‌ها"}
+UNVIP_TRIGGERS = {"لغو ویژه"}
+ADD_ADMIN_TRIGGERS = {"افزودن ادمین گروه", "افزودن ادمین"}
+REMOVE_ADMIN_TRIGGERS = {"حذف ادمین گروه", "حذف ادمین"}
+LIST_ADMIN_TRIGGERS = {"لیست ادمین های گروه", "لیست ادمین ها"}
+SHOW_OWNER_TRIGGERS = {"مالک این گروه", "مالک گروه"}
+CLAIM_OWNER_TRIGGERS = {"ادعای مالکیت"}
+SET_OWNER_PREFIX = "تنظیم مالک"
 SPAM_SETTINGS_PREFIX = "تنظیم اسپم"
 SHOW_SPAM_SETTINGS_TRIGGERS = {"تنظیمات اسپم"}
 
@@ -44,7 +50,11 @@ DEFAULT_MUTE_SECONDS = 24 * 60 * 60  # 24h manual mute triggered by an admin
 
 
 async def _require_admin(message: Message) -> bool:
-    return await is_authorized_admin(bot, db, message.chat.id, message.from_user.id)
+    return await is_authorized_admin(db, message.chat.id, message.from_user.id)
+
+
+async def _require_role_manager(message: Message) -> bool:
+    return await can_manage_chat_roles(db, message.chat.id, message.from_user.id)
 
 
 def _reply_target(message: Message):
@@ -144,7 +154,7 @@ async def mute_user(message: Message):
 
 
 # ---------------------------------------------------------------- #
-# VIP
+# VIP — per-chat, set/unset
 # ---------------------------------------------------------------- #
 
 @bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: m.text and m.text.strip() in VIP_TRIGGERS)
@@ -155,55 +165,151 @@ async def set_vip(message: Message):
     if not target:
         await bot.reply_to(message, "⚠️ برای تنظیم عضو ویژه، روی پیام او ریپلای کنید.")
         return
-    await db.upsert_user(target.id, target.username, target.first_name, target.last_name)
-    await db.set_vip(target.id, True)
-    await bot.reply_to(message, f"⭐️ کاربر {target.full_name} اکنون عضو ویژه (VIP) است.")
-
-
-# ---------------------------------------------------------------- #
-# BOT ADMIN MANAGEMENT — owner-only, bot-wide (NOT scoped to one group)
-# ---------------------------------------------------------------- #
-
-@bot.message_handler(func=lambda m: m.text and m.text.strip() in ADD_BOT_ADMIN_TRIGGERS)
-async def add_bot_admin(message: Message):
-    if not is_owner(message.from_user.id):
-        return
-    target = _reply_target(message)
-    if not target:
-        await bot.reply_to(message, "⚠️ روی پیام کاربری که می‌خواهید ادمین ربات شود ریپلای کنید.")
-        return
-    await db.upsert_user(target.id, target.username, target.first_name, target.last_name)
-    await db.add_bot_admin(target.id, added_by=message.from_user.id)
+    await db.set_user_role(
+        message.chat.id, target.id, "vip",
+        username=target.username, first_name=target.first_name, last_name=target.last_name,
+    )
     await bot.reply_to(
-        message,
-        f"✅ کاربر {target.full_name} اکنون ادمین ربات است و در همهٔ گروه‌های این ربات دسترسی مدیریتی دارد.",
+        message, f"⭐️ کاربر {target.full_name} اکنون عضو ویژهٔ این گروه است (فقط در همین گروه)."
     )
 
 
-@bot.message_handler(func=lambda m: m.text and m.text.strip() in REMOVE_BOT_ADMIN_TRIGGERS)
-async def remove_bot_admin(message: Message):
-    if not is_owner(message.from_user.id):
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: m.text and m.text.strip() in UNVIP_TRIGGERS)
+async def unset_vip(message: Message):
+    if not await _require_admin(message):
+        return
+    target = _reply_target(message)
+    if not target:
+        await bot.reply_to(message, "⚠️ برای لغو عضویت ویژه، روی پیام او ریپلای کنید.")
+        return
+    current_role = await db.get_user_role(message.chat.id, target.id)
+    if current_role != "vip":
+        await bot.reply_to(message, f"{target.full_name} عضو ویژهٔ این گروه نیست.")
+        return
+    await db.set_user_role(message.chat.id, target.id, "normal")
+    await bot.reply_to(message, f"✅ عضویت ویژهٔ {target.full_name} در این گروه لغو شد.")
+
+
+# ---------------------------------------------------------------- #
+# GROUP OWNERSHIP — view / claim (bootstrap) / force-transfer
+# ---------------------------------------------------------------- #
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: m.text and m.text.strip() in SHOW_OWNER_TRIGGERS)
+async def show_owner(message: Message):
+    owner_id = await db.get_chat_owner(message.chat.id)
+    if not owner_id:
+        await bot.reply_to(
+            message,
+            "👑 برای این گروه هنوز مالکی ثبت نشده (مثلاً چون ربات قبل از این قابلیت اضافه شده).\n"
+            "اگر شما ادمین واقعی تلگرام در این گروه هستید، می‌توانید بنویسید: «ادعای مالکیت»",
+        )
+        return
+    name = await db.get_user_display_name(message.chat.id, owner_id)
+    await bot.reply_to(message, f"👑 مالک این گروه: {name}")
+
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: m.text and m.text.strip() in CLAIM_OWNER_TRIGGERS)
+async def claim_owner(message: Message):
+    """
+    Bootstrap fallback: if this chat has no recorded owner yet (e.g. the bot
+    was added before this feature existed), a real Telegram admin/creator of
+    the group can claim it. Does nothing if an owner is already set.
+    """
+    existing = await db.get_chat_owner(message.chat.id)
+    if existing:
+        await bot.reply_to(message, "این گروه از قبل مالک ثبت‌شده دارد. برای دیدن آن بنویسید: «مالک این گروه»")
+        return
+    if not await is_group_admin(bot, message.chat.id, message.from_user.id):
+        await bot.reply_to(message, "⚠️ فقط ادمین‌های واقعی تلگرام در این گروه می‌توانند مالکیت را ادعا کنند.")
+        return
+    u = message.from_user
+    await db.set_user_role(message.chat.id, u.id, "owner", username=u.username, first_name=u.first_name, last_name=u.last_name)
+    await bot.reply_to(message, f"👑 {u.full_name} به‌عنوان مالک این گروه ثبت شد.")
+
+
+@bot.message_handler(
+    chat_types=["group", "supergroup"],
+    func=lambda m: m.text and m.text.strip().startswith(SET_OWNER_PREFIX),
+)
+async def force_set_owner(message: Message):
+    """Global-Owner-only override, for support/edge cases (e.g. real ownership transfer)."""
+    if not is_global_owner(message.from_user.id):
+        return
+    target = _reply_target(message)
+    if not target:
+        await bot.reply_to(message, "⚠️ روی پیام کاربری که می‌خواهید مالک گروه شود ریپلای کنید.")
+        return
+    await db.set_user_role(
+        message.chat.id, target.id, "owner",
+        username=target.username, first_name=target.first_name, last_name=target.last_name,
+    )
+    await bot.reply_to(message, f"✅ {target.full_name} اکنون مالک این گروه است.")
+
+
+# ---------------------------------------------------------------- #
+# GROUP ADMINS — appointed by the group's owner (or a Global Owner) only
+# ---------------------------------------------------------------- #
+
+@bot.message_handler(
+    chat_types=["group", "supergroup"], func=lambda m: m.text and m.text.strip() in ADD_ADMIN_TRIGGERS
+)
+async def add_admin(message: Message):
+    if not await _require_role_manager(message):
+        await bot.reply_to(message, "⚠️ فقط مالک این گروه می‌تواند ادمین گروه اضافه کند.")
+        return
+    target = _reply_target(message)
+    if not target:
+        await bot.reply_to(message, "⚠️ روی پیام کاربری که می‌خواهید ادمین این گروه شود ریپلای کنید.")
+        return
+    await db.set_user_role(
+        message.chat.id, target.id, "admin",
+        username=target.username, first_name=target.first_name, last_name=target.last_name,
+    )
+    await bot.reply_to(
+        message, f"✅ کاربر {target.full_name} اکنون ادمین این گروه است (فقط در همین گروه)."
+    )
+
+
+@bot.message_handler(
+    chat_types=["group", "supergroup"], func=lambda m: m.text and m.text.strip() in REMOVE_ADMIN_TRIGGERS
+)
+async def remove_admin(message: Message):
+    if not await _require_role_manager(message):
+        await bot.reply_to(message, "⚠️ فقط مالک این گروه می‌تواند دسترسی ادمین را بگیرد.")
         return
     target = _reply_target(message)
     if not target:
         await bot.reply_to(message, "⚠️ روی پیام کاربر مورد نظر ریپلای کنید.")
         return
-    await db.remove_bot_admin(target.id)
-    await bot.reply_to(message, f"✅ دسترسی ادمین ربات از {target.full_name} گرفته شد.")
+    current_role = await db.get_user_role(message.chat.id, target.id)
+    if current_role != "admin":
+        await bot.reply_to(message, f"{target.full_name} ادمین این گروه نیست.")
+        return
+    await db.set_user_role(message.chat.id, target.id, "normal")
+    await bot.reply_to(message, f"✅ دسترسی ادمین این گروه از {target.full_name} گرفته شد.")
 
 
-@bot.message_handler(func=lambda m: m.text and m.text.strip() in LIST_BOT_ADMIN_TRIGGERS)
-async def list_bot_admins(message: Message):
-    if message.chat.type in ("group", "supergroup") and not await _require_admin(message):
+@bot.message_handler(
+    chat_types=["group", "supergroup"], func=lambda m: m.text and m.text.strip() in LIST_ADMIN_TRIGGERS
+)
+async def list_admins(message: Message):
+    if not await _require_admin(message):
         return
-    admins = await db.list_bot_admins()
-    if not admins:
-        await bot.reply_to(message, "هیچ ادمین ربات (جدا از ادمین‌های تلگرام) ثبت نشده است.")
-        return
-    lines = ["👮‍♂️ <b>ادمین‌های ربات:</b>"]
-    for user_id in admins:
-        name = await db.get_user_display_name(user_id)
-        lines.append(f"• {name}")
+    admin_ids = await db.list_users_by_role(message.chat.id, "admin")
+    owner_id = await db.get_chat_owner(message.chat.id)
+
+    lines = []
+    if owner_id:
+        owner_name = await db.get_user_display_name(message.chat.id, owner_id)
+        lines.append(f"👑 مالک: {owner_name}")
+    if admin_ids:
+        lines.append("\n👮‍♂️ <b>ادمین‌های این گروه:</b>")
+        for user_id in admin_ids:
+            name = await db.get_user_display_name(message.chat.id, user_id)
+            lines.append(f"• {name}")
+    else:
+        lines.append("\nهیچ ادمینی (جدا از مالک) برای این گروه تعیین نشده.")
+
     await bot.reply_to(message, "\n".join(lines))
 
 

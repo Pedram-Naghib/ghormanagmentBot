@@ -16,14 +16,14 @@ from core import bot, db
 DAY = timedelta(hours=24)
 
 
-async def _format_stats(chat_id: int, since_iso) -> str:
-    senders = await db.get_top_message_senders(chat_id, since_iso=since_iso)
-    adders = await db.get_top_adders(chat_id, since_iso=since_iso)
+async def _format_stats(chat_id: int, since) -> str:
+    senders = await db.get_top_message_senders(chat_id, since=since)
+    adders = await db.get_top_adders(chat_id, since=since)
 
     lines = ["📨 <b>پیام‌ها:</b>"]
     if senders:
         for user_id, count in senders:
-            name = await db.get_user_display_name(user_id)
+            name = await db.get_user_display_name(chat_id, user_id)
             lines.append(f"• {name}: {count} پیام")
     else:
         lines.append("پیامی ثبت نشده است.")
@@ -31,7 +31,7 @@ async def _format_stats(chat_id: int, since_iso) -> str:
     lines.append("\n👥 <b>اعضای اضافه‌شده:</b>")
     if adders:
         for user_id, count in adders:
-            name = await db.get_user_display_name(user_id)
+            name = await db.get_user_display_name(chat_id, user_id)
             lines.append(f"• {name}: {count} عضو")
     else:
         lines.append("عضوی اضافه نشده است.")
@@ -44,8 +44,8 @@ async def _format_stats(chat_id: int, since_iso) -> str:
     func=lambda m: m.text and m.text.strip() in {"آمار روزانه", "/daily_stats"},
 )
 async def daily_stats(message: Message):
-    since_iso = (datetime.now(timezone.utc) - DAY).isoformat()
-    text = await _format_stats(message.chat.id, since_iso)
+    since = datetime.now(timezone.utc) - DAY
+    text = await _format_stats(message.chat.id, since)
     await bot.reply_to(message, f"📊 <b>آمار ۲۴ ساعت گذشته گروه</b>\n\n{text}")
 
 

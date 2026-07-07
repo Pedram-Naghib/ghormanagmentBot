@@ -4,8 +4,9 @@ handlers/profile_command.py
 پروفایل / /profile
 
 Reply to someone's message with this word to see their name, profile
-picture (if available), role, total messages in this group, and messages
-in the last 24 hours. Used without a reply, shows your own profile.
+picture (if available), their role in THIS group, total messages in this
+group, and messages in the last 24 hours. Used without a reply, shows your
+own profile.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -15,6 +16,13 @@ from telebot.types import Message
 from core import bot, db
 
 DAY = timedelta(hours=24)
+
+ROLE_LABELS = {
+    "owner": "👑 مالک گروه",
+    "admin": "👮‍♂️ ادمین گروه",
+    "vip": "⭐️ ویژه (VIP)",
+    "normal": "👤 عادی",
+}
 
 
 @bot.message_handler(
@@ -28,12 +36,12 @@ async def show_profile(message: Message):
         else message.from_user
     )
 
-    total = await db.get_user_message_count(target.id, message.chat.id)
-    since_iso = (datetime.now(timezone.utc) - DAY).isoformat()
-    last_24h = await db.get_user_message_count(target.id, message.chat.id, since_iso=since_iso)
+    total = await db.get_user_message_count(message.chat.id, target.id)
+    since = datetime.now(timezone.utc) - DAY
+    last_24h = await db.get_user_message_count(message.chat.id, target.id, since=since)
 
-    is_vip = await db.is_vip(target.id)
-    role = "⭐️ ویژه (VIP)" if is_vip else "👤 عادی"
+    role = await db.get_user_role(message.chat.id, target.id)
+    role_label = ROLE_LABELS.get(role, ROLE_LABELS["normal"])
 
     full_name = " ".join(filter(None, [target.first_name, target.last_name])) or "-"
     username_line = f"یوزرنیم: @{target.username}\n" if target.username else ""
@@ -42,7 +50,7 @@ async def show_profile(message: Message):
         f"👤 <b>پروفایل کاربر</b>\n\n"
         f"نام: {full_name}\n"
         f"{username_line}"
-        f"سطح دسترسی: {role}\n"
+        f"سطح دسترسی در این گروه: {role_label}\n"
         f"📨 کل پیام‌ها در این گروه: {total}\n"
         f"🕓 پیام‌های ۲۴ ساعت اخیر: {last_24h}"
     )

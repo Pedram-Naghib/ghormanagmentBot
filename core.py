@@ -4,28 +4,26 @@ core.py
 Shared singletons: the bot instance and the database instance.
 
 Every handler module does `from core import bot, db` instead of creating its
-own instances. This avoids a circular import between bot.py (which imports
-the handler modules to register them) and the handler modules themselves
-(which need the bot instance to register handlers on).
+own instances, avoiding a circular import between bot.py (which imports the
+handler modules to register them) and the handler modules themselves (which
+need the bot instance to register handlers on).
 """
 
-from telebot.async_telebot import AsyncTeleBot
 from telebot import asyncio_helper
+from telebot.async_telebot import AsyncTeleBot
 
-from config import BOT_TOKEN
+from config import BOT_TOKEN, PROXY_URL
 from database import Database
-
-# ── Proxy Configuration ───────────────────────────────────
-# This routes the bot's traffic through your local VPN/Proxy 
-# to prevent the ClientConnectorError / RequestTimeout.
-# Adjust the port (e.g., 10809 for HTTP, 10808 for SOCKS5) to match your system.
-
-# asyncio_helper.proxy = 'http://127.0.0.1:10809'
-asyncio_helper.proxy = 'socks5://127.0.0.1:10808'
-# ──────────────────────────────────────────────────────────
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set. Copy .env.example to .env and fill it in.")
+
+# Only route through a proxy if PROXY_URL is actually set - leaving this
+# unconditional breaks the bot for anyone without that exact local proxy
+# running, and breaks it outright on a server deploy where no such proxy
+# exists. Set PROXY_URL in .env only if Telegram is blocked where you run this.
+if PROXY_URL:
+    asyncio_helper.proxy = PROXY_URL
 
 bot = AsyncTeleBot(BOT_TOKEN, parse_mode="HTML")
 db = Database()
