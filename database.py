@@ -1,252 +1,190 @@
-"""
-database.py
--------------
-All persistence logic, backed by Supabase (Postgres) via supabase-py.
+import os
+import asyncpg
+from dotenv import load_dotenv
 
-supabase-py's client is synchronous under the hood (httpx sync client), so
-every call is wrapped with `asyncio.to_thread(...)` to avoid blocking the
-bot's event loop. This is the ONLY file that talks to the database - every
-handler goes through the `Database` class methods below.
-
-Run schema.sql once in your Supabase project's SQL Editor before starting
-the bot - it creates all required tables, indexes, and the two aggregate
-RPC functions used for group-wide stats (Postgres GROUP BY isn't reachable
-through the plain REST query builder, so we use small SQL functions for it).
-"""
-
-import asyncio
-from typing import List, Optional, Tuple
-
-from supabase import Client, create_client
-
-from config import (
-    DEFAULT_SPAM_MESSAGE_LIMIT,
-    DEFAULT_SPAM_MUTE_MINUTES,
-    DEFAULT_SPAM_TIME_WINDOW_SECONDS,
-    STATS_TOP_N,
-    SUPABASE_KEY,
-    SUPABASE_URL,
-)
-
+# Load environment variables
+load_dotenv()
 
 class Database:
     def __init__(self):
-        if not SUPABASE_URL or not SUPABASE_KEY:
-            raise RuntimeError(
-                "SUPABASE_URL / SUPABASE_KEY are not set. Copy .env.example to .env, "
-                "create a Supabase project, and fill these in."
+        # ── DB configuration from .env ────────────────────────────
+        self.user = os.getenv("DB_USER", "postgres")
+        self.password = os.getenv("DB_PASS")
+        self.host = os.getenv("DB_HOST", "db.ohqdocodrbljclngudce.supabase.co")
+        self.port = int(os.getenv("DB_PORT", "5432"))
+        self.db_name = os.getenv("DB_NAME", "postgres")
+        self.pool = None
+
+    async def get_connection_pool(self):
+        """Initializes or returns the active asyncpg connection pool."""
+        if self.pool is None:
+            self.pool = await asyncpg.create_pool(
+                user=self.user,
+                password=self.password,
+                host=self.host,
+                port=self.port,
+                database=self.db_name,
+                min_size=2,
+                max_size=10
             )
-        self.client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        return self.pool
 
-    async def _run(self, fn, *args, **kwargs):
-        """Run a blocking supabase-py call in a worker thread."""
-        return await asyncio.to_thread(fn, *args, **kwargs)
+    async def close(self):
+        """Safely closes the connection pool when the bot shuts down."""
+        if self.pool is not None:
+            await self.pool.close()
+            self.pool = None
 
-    # ---------------------------------------------------------------- #
-    # USERS
-    # ---------------------------------------------------------------- #
+    # ── Schema init ───────────────────────────────────────────
+    async def init_db(self):
+        """Creates the management bot schema tables on startup."""
+        pool = await self.get_connection_pool()
+        async with pool.acquire() as conn:
+            
+            # 1. Main Users Table (Tracks roles and all-time stats per group)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS group_users (
+                    chat_id BIGINT,
+                    user_id BIGINT,
+                    first_name TEXT,
+                    last_name TEXT,
+                    username TEXT,
+                    role TEXT DEFAULT 'normal', -- Roles: 'normal', 'vip', 'admin'
+                    messages_all_time INT DEFAULT 0,
+                    members_added_count INT DEFAULT 0,
+                    joined_at TIMESTAMPTZ DEFAULT NOW(),
+                    PRIMARY KEY (chat_id, user_id)
+                )
+            """)
 
-    async def upsert_user(
-        self,
-        user_id: int,
-        username: Optional[str],
-        first_name: Optional[str],
-        last_name: Optional[str],
-    ):
-        def _do():
-            self.client.table("users").upsert(
-                {
-                    "user_id": user_id,
-                    "username": username,
-                    "first_name": first_name,
-                    "last_name": last_name,
-                }
-            ).execute()
+            # 2. 24-Hour Tracking Table (Logs individual messages for accurate 24h stats)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS message_logs (
+                    id SERIAL PRIMARY KEY,
+                    chat_id BIGINT,
+                    user_id BIGINT,
+                    sent_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            
+            # Index to make 24h queries and cleanups blazing fast
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_logs_time ON message_logs(sent_at);")
 
-        await self._run(_do)
+            print("🚀 Database initialized successfully.")
 
-    async def set_vip(self, user_id: int, is_vip: bool = True):
-        def _do():
-            self.client.table("users").update({"is_vip": is_vip}).eq("user_id", user_id).execute()
+    # ── User Management & Tracking ────────────────────────────
+    async def register_or_update_user(self, chat_id: int, user_id: int, first_name: str, last_name: str, username: str):
+        pool = await self.get_connection_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO group_users (chat_id, user_id, first_name, last_name, username)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (chat_id, user_id) DO UPDATE
+                    SET first_name = EXCLUDED.first_name,
+                        last_name = EXCLUDED.last_name,
+                        username = EXCLUDED.username
+            """, chat_id, user_id, first_name, last_name, username)
 
-        await self._run(_do)
+    async def log_message(self, chat_id: int, user_id: int):
+        pool = await self.get_connection_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE group_users 
+                SET messages_all_time = messages_all_time + 1 
+                WHERE chat_id = $1 AND user_id = $2
+            """, chat_id, user_id)
+            
+            await conn.execute("""
+                INSERT INTO message_logs (chat_id, user_id) VALUES ($1, $2)
+            """, chat_id, user_id)
 
-    async def is_vip(self, user_id: int) -> bool:
-        def _do():
-            res = self.client.table("users").select("is_vip").eq("user_id", user_id).limit(1).execute()
-            return res.data
+    async def log_member_added(self, chat_id: int, user_id: int, count: int = 1):
+        pool = await self.get_connection_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE group_users 
+                SET members_added_count = members_added_count + $3 
+                WHERE chat_id = $1 AND user_id = $2
+            """, chat_id, user_id, count)
 
-        data = await self._run(_do)
-        return bool(data and data[0].get("is_vip"))
+    # ── Roles & Permissions ───────────────────────────────────
+    async def set_user_role(self, chat_id: int, user_id: int, role: str) -> bool:
+        pool = await self.get_connection_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute("""
+                UPDATE group_users SET role = $3 
+                WHERE chat_id = $1 AND user_id = $2
+            """, chat_id, user_id, role)
+            return result.endswith("1")
 
-    async def get_user_display_name(self, user_id: int) -> str:
-        def _do():
-            res = (
-                self.client.table("users")
-                .select("username, first_name, last_name")
-                .eq("user_id", user_id)
-                .limit(1)
-                .execute()
-            )
-            return res.data
+    async def get_user_role(self, chat_id: int, user_id: int) -> str:
+        pool = await self.get_connection_pool()
+        async with pool.acquire() as conn:
+            role = await conn.fetchval("""
+                SELECT role FROM group_users WHERE chat_id = $1 AND user_id = $2
+            """, chat_id, user_id)
+            return role if role else 'normal'
 
-        data = await self._run(_do)
-        if not data:
-            return str(user_id)
-        row = data[0]
-        name = " ".join(filter(None, [row.get("first_name"), row.get("last_name")])).strip()
-        return name or (f"@{row['username']}" if row.get("username") else str(user_id))
+    # ── Statistics & Profiles ─────────────────────────────────
+    async def get_user_profile(self, chat_id: int, user_id: int) -> dict:
+        pool = await self.get_connection_pool()
+        async with pool.acquire() as conn:
+            user_info = await conn.fetchrow("""
+                SELECT first_name, last_name, role, messages_all_time, members_added_count
+                FROM group_users WHERE chat_id = $1 AND user_id = $2
+            """, chat_id, user_id)
+            
+            if not user_info:
+                return None
 
-    async def get_user_id_by_username(self, username: str) -> Optional[int]:
-        """Look up a numeric user_id by @username (case-insensitive)."""
-        def _do():
-            res = (
-                self.client.table("users")
-                .select("user_id")
-                .ilike("username", username)
-                .limit(1)
-                .execute()
-            )
-            return res.data
+            msgs_24h = await conn.fetchval("""
+                SELECT COUNT(*) FROM message_logs 
+                WHERE chat_id = $1 AND user_id = $2 AND sent_at >= NOW() - INTERVAL '24 hours'
+            """, chat_id, user_id)
 
-        data = await self._run(_do)
-        return data[0]["user_id"] if data else None
-
-    # ---------------------------------------------------------------- #
-    # BOT ADMINS (bot-wide, separate from Telegram group-admin status)
-    # ---------------------------------------------------------------- #
-
-    async def add_bot_admin(self, user_id: int, added_by: Optional[int] = None):
-        def _do():
-            self.client.table("bot_admins").upsert({"user_id": user_id, "added_by": added_by}).execute()
-
-        await self._run(_do)
-
-    async def remove_bot_admin(self, user_id: int):
-        def _do():
-            self.client.table("bot_admins").delete().eq("user_id", user_id).execute()
-
-        await self._run(_do)
-
-    async def is_bot_admin(self, user_id: int) -> bool:
-        def _do():
-            res = self.client.table("bot_admins").select("user_id").eq("user_id", user_id).limit(1).execute()
-            return res.data
-
-        data = await self._run(_do)
-        return bool(data)
-
-    async def list_bot_admins(self) -> List[int]:
-        def _do():
-            res = self.client.table("bot_admins").select("user_id").execute()
-            return res.data
-
-        data = await self._run(_do)
-        return [row["user_id"] for row in data]
-
-    # ---------------------------------------------------------------- #
-    # MESSAGE TRACKING
-    # ---------------------------------------------------------------- #
-
-    async def log_message(self, user_id: int, chat_id: int):
-        def _do():
-            self.client.table("message_log").insert({"user_id": user_id, "chat_id": chat_id}).execute()
-
-        await self._run(_do)
-
-    async def get_user_message_count(
-        self, user_id: int, chat_id: int, since_iso: Optional[str] = None
-    ) -> int:
-        def _do():
-            q = (
-                self.client.table("message_log")
-                .select("id", count="exact")
-                .eq("user_id", user_id)
-                .eq("chat_id", chat_id)
-            )
-            if since_iso:
-                q = q.gte("created_at", since_iso)
-            res = q.execute()
-            return res.count or 0
-
-        return await self._run(_do)
-
-    # ---------------------------------------------------------------- #
-    # MEMBER-ADDED TRACKING
-    # ---------------------------------------------------------------- #
-
-    async def log_member_added(self, adder_id: int, new_member_id: int, chat_id: int):
-        def _do():
-            self.client.table("member_log").insert(
-                {"adder_id": adder_id, "new_member_id": new_member_id, "chat_id": chat_id}
-            ).execute()
-
-        await self._run(_do)
-
-    # ---------------------------------------------------------------- #
-    # AGGREGATE STATS (via Postgres RPC functions - see schema.sql)
-    # ---------------------------------------------------------------- #
-
-    async def get_top_message_senders(
-        self, chat_id: int, since_iso: Optional[str] = None, limit: int = STATS_TOP_N
-    ) -> List[Tuple[int, int]]:
-        def _do():
-            res = self.client.rpc(
-                "top_message_senders",
-                {"p_chat_id": chat_id, "p_since": since_iso, "p_limit": limit},
-            ).execute()
-            return res.data
-
-        data = await self._run(_do)
-        return [(row["user_id"], row["message_count"]) for row in data]
-
-    async def get_top_adders(
-        self, chat_id: int, since_iso: Optional[str] = None, limit: int = STATS_TOP_N
-    ) -> List[Tuple[int, int]]:
-        def _do():
-            res = self.client.rpc(
-                "top_member_adders",
-                {"p_chat_id": chat_id, "p_since": since_iso, "p_limit": limit},
-            ).execute()
-            return res.data
-
-        data = await self._run(_do)
-        return [(row["adder_id"], row["added_count"]) for row in data]
-
-    # ---------------------------------------------------------------- #
-    # PER-CHAT ANTI-SPAM SETTINGS (admins tune these live, no .env edits)
-    # ---------------------------------------------------------------- #
-
-    async def get_chat_settings(self, chat_id: int) -> dict:
-        def _do():
-            res = self.client.table("chat_settings").select("*").eq("chat_id", chat_id).limit(1).execute()
-            return res.data
-
-        data = await self._run(_do)
-        if data:
-            row = data[0]
             return {
-                "spam_message_limit": row["spam_message_limit"],
-                "spam_time_window_seconds": row["spam_time_window_seconds"],
-                "spam_mute_minutes": row["spam_mute_minutes"],
+                "first_name": user_info["first_name"],
+                "last_name": user_info["last_name"],
+                "role": user_info["role"],
+                "messages_all_time": user_info["messages_all_time"],
+                "members_added_count": user_info["members_added_count"],
+                "messages_24h": msgs_24h
             }
-        return {
-            "spam_message_limit": DEFAULT_SPAM_MESSAGE_LIMIT,
-            "spam_time_window_seconds": DEFAULT_SPAM_TIME_WINDOW_SECONDS,
-            "spam_mute_minutes": DEFAULT_SPAM_MUTE_MINUTES,
-        }
 
-    async def set_chat_settings(
-        self, chat_id: int, spam_message_limit: int, spam_time_window_seconds: int, spam_mute_minutes: int
-    ):
-        def _do():
-            self.client.table("chat_settings").upsert(
-                {
-                    "chat_id": chat_id,
-                    "spam_message_limit": spam_message_limit,
-                    "spam_time_window_seconds": spam_time_window_seconds,
-                    "spam_mute_minutes": spam_mute_minutes,
-                }
-            ).execute()
+    async def get_group_stats_24h(self, chat_id: int) -> list:
+        pool = await self.get_connection_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT u.first_name, COUNT(m.id) as msg_count
+                FROM message_logs m
+                JOIN group_users u ON m.user_id = u.user_id AND m.chat_id = u.chat_id
+                WHERE m.chat_id = $1 AND m.sent_at >= NOW() - INTERVAL '24 hours'
+                GROUP BY u.user_id, u.first_name
+                ORDER BY msg_count DESC
+                LIMIT 10
+            """, chat_id)
+            return [dict(r) for r in rows]
 
-        await self._run(_do)
+    async def get_group_stats_all_time(self, chat_id: int) -> list:
+        pool = await self.get_connection_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT first_name, messages_all_time 
+                FROM group_users 
+                WHERE chat_id = $1 
+                ORDER BY messages_all_time DESC 
+                LIMIT 10
+            """, chat_id)
+            return [dict(r) for r in rows]
+
+    # ── Maintenance ───────────────────────────────────────────
+    async def prune_old_message_logs(self) -> int:
+        pool = await self.get_connection_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute("""
+                DELETE FROM message_logs WHERE sent_at < NOW() - INTERVAL '48 hours'
+            """)
+            try:
+                return int(result.split()[-1])
+            except Exception:
+                return 0
