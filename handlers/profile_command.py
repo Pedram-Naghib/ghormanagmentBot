@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from telebot.types import Message
 
 from core import bot, db
+from utils.text import normalize_fa
 
 DAY = timedelta(hours=24)
 
@@ -27,7 +28,7 @@ ROLE_LABELS = {
 
 @bot.message_handler(
     chat_types=["group", "supergroup"],
-    func=lambda m: m.text and m.text.strip() in {"پروفایل", "/profile"},
+    func=lambda m: normalize_fa(m.text or "").strip() in {"پروفایل", "/profile"},
 )
 async def show_profile(message: Message):
     target = (

@@ -1,17 +1,17 @@
 """
 handlers/start_command.py
 ----------------------------
-/start — shown in a private chat with the bot (the very first thing a new
-group owner sees). Deliberately its own thing: short, direct, real inline
-buttons (not text formatted to look like buttons), and no imitation of any
-other bot's copy or layout.
+/start — shown in a private chat with the bot. If an image is registered
+under the key "start_banner" (see "ثبت تصویر" in handlers/admin_commands.py),
+it's sent as a photo with the welcome text as its caption; the image itself
+never changes when the person taps a button below it.
 """
 
-from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from telebot.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import SUPPORT_URL
-from core import bot
-from handlers.help_command import HELP_TEXT
+from core import bot, db
+from handlers.help_command import send_help
 
 _bot_username_cache = None
 
@@ -59,10 +59,14 @@ async def _start_keyboard() -> InlineKeyboardMarkup:
 async def start_command(message: Message):
     text = _start_text(message.from_user.first_name if message.from_user else "")
     keyboard = await _start_keyboard()
-    await bot.reply_to(message, text, reply_markup=keyboard)
+    banner = await db.get_asset("start_banner")
+    if banner:
+        await bot.send_photo(message.chat.id, banner, caption=text, reply_markup=keyboard)
+    else:
+        await bot.reply_to(message, text, reply_markup=keyboard)
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "show_help")
-async def start_show_help(call):
+async def start_show_help(call: CallbackQuery):
     await bot.answer_callback_query(call.id)
-    await bot.send_message(call.message.chat.id, HELP_TEXT)
+    await send_help(call.message.chat.id)

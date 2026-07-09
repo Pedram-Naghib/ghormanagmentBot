@@ -131,6 +131,16 @@ class Database:
                 );
                 """
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bot_assets (
+                    key TEXT PRIMARY KEY,
+                    file_id TEXT NOT NULL,
+                    set_by BIGINT,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+                """
+            )
 
     # ---------------------------------------------------------------- #
     # USERS / PROFILE  (all scoped per chat_id, since group_users is)
@@ -362,4 +372,29 @@ class Database:
                     spam_mute_minutes = EXCLUDED.spam_mute_minutes
                 """,
                 chat_id, spam_message_limit, spam_time_window_seconds, spam_mute_minutes,
+            )
+
+    # ---------------------------------------------------------------- #
+    # BOT ASSETS (cached Telegram file_ids - e.g. images for /start, /help)
+    # ---------------------------------------------------------------- #
+    # We NEVER store or serve raw image bytes ourselves. Telegram already
+    # hosts every photo forever once it's been sent through the bot once;
+    # a file_id is a tiny string that tells Telegram's own servers "resend
+    # that exact file" - no re-upload, no bandwidth or storage cost on our
+    # side no matter how many images you add or how large they are.
+
+    async def get_asset(self, key: str) -> Optional[str]:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval("SELECT file_id FROM bot_assets WHERE key=$1", key)
+
+    async def set_asset(self, key: str, file_id: str, set_by: Optional[int] = None):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO bot_assets (key, file_id, set_by)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (key) DO UPDATE SET file_id = EXCLUDED.file_id, set_by = EXCLUDED.set_by,
+                    updated_at = now()
+                """,
+                key, file_id, set_by,
             )

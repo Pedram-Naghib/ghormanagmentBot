@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from telebot.types import Message
 
 from core import bot, db
+from utils.text import normalize_fa
 
 DAY = timedelta(hours=24)
 
@@ -41,7 +42,7 @@ async def _format_stats(chat_id: int, since) -> str:
 
 @bot.message_handler(
     chat_types=["group", "supergroup"],
-    func=lambda m: m.text and m.text.strip() in {"آمار روزانه", "/daily_stats"},
+    func=lambda m: normalize_fa(m.text or "").strip() in {"آمار روز", "/daily_stats", "امار روز"},
 )
 async def daily_stats(message: Message):
     since = datetime.now(timezone.utc) - DAY
@@ -51,7 +52,7 @@ async def daily_stats(message: Message):
 
 @bot.message_handler(
     chat_types=["group", "supergroup"],
-    func=lambda m: m.text and m.text.strip() in {"آمار کل", "/total_stats"},
+    func=lambda m: normalize_fa(m.text or "").strip() in {"آمار کل", "/total_stats", "امار کل"},
 )
 async def total_stats(message: Message):
     text = await _format_stats(message.chat.id, None)
