@@ -17,6 +17,7 @@ from aiohttp import web
 
 from config import BOT_TOKEN, WEBAPP_HOST, WEBAPP_PORT, WEBHOOK_PATH, WEBHOOK_URL
 from core import bot, db
+from docs_page import register_docs_route
 
 # Import handler modules so their @bot.message_handler decorators register.
 # ORDER MATTERS: pyTelegramBotAPI tests handlers in registration order and
@@ -87,6 +88,7 @@ async def run_webhook():
         return web.Response()
 
     app.router.add_post("/webhook/{token}", handle_webhook)
+    register_docs_route(app)  # GET /docs -> full human-readable guide (see docs_page.py)
 
     await bot.remove_webhook()
     await bot.set_webhook(url=f"{WEBHOOK_URL}{WEBHOOK_PATH}", allowed_updates=ALLOWED_UPDATES)
@@ -96,6 +98,7 @@ async def run_webhook():
     site = web.TCPSite(runner, WEBAPP_HOST, WEBAPP_PORT)
     await site.start()
     logger.info("Webhook server listening on %s:%s", WEBAPP_HOST, WEBAPP_PORT)
+    logger.info("Full guide available at %s/docs", WEBHOOK_URL)
 
     await asyncio.Event().wait()  # keep the process alive
 

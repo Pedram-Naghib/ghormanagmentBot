@@ -5,6 +5,12 @@ handlers/panel_command.py
 تنظیمات پیشرفته), replacing a growing pile of separate text commands with
 one navigable menu, the way DIGI ANTI's panel works.
 
+If an image is registered under the key "panel_banner" (see "ثبت تصویر" in
+handlers/admin_commands.py), it's sent once as a photo and stays exactly
+as-is; only the caption and keyboard change as the admin taps between
+sections (via editMessageCaption), so the image never re-sends or changes -
+same pattern as /start and «راهنما».
+
 SECURITY: every button here is invoker-locked (see utils/panel_auth.py) -
 only the admin who opened THIS panel message can press its buttons. Anyone
 else tapping gets a small alert instead of silently acting as them.
@@ -121,16 +127,20 @@ async def _settings_text_and_keyboard(chat_id: int, invoker_id: int):
     s = await db.get_chat_settings(chat_id)
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
-        InlineKeyboardButton("خوش‌آمدگویی", callback_data=encode(invoker_id, "settings", "toggle", "welcome"),
-            style = 'success' if s['welcome_enabled'] else None),
         InlineKeyboardButton(
-            "بدرود", callback_data=encode(invoker_id, "settings", "toggle", "goodbye"),
-            style = 'success' if s['goodbye_enabled'] else None),
+            f"{'✅' if s['welcome_enabled'] else '❌'} خوش‌آمدگویی",
+            callback_data=encode(invoker_id, "settings", "toggle", "welcome"),
+        ),
+        InlineKeyboardButton(
+            f"{'✅' if s['goodbye_enabled'] else '❌'} بدرود",
+            callback_data=encode(invoker_id, "settings", "toggle", "goodbye"),
+        ),
     )
     kb.add(
         InlineKeyboardButton(
-            "کپچای عضویت", callback_data=encode(invoker_id, "settings", "toggle", "captcha"),
-            style = 'success' if s['join_captcha_enabled'] else None)
+            f"{'✅' if s['join_captcha_enabled'] else '❌'} کپچای عضویت",
+            callback_data=encode(invoker_id, "settings", "toggle", "captcha"),
+        )
     )
     kb.add(InlineKeyboardButton("⬅️ بازگشت", callback_data=encode(invoker_id, "main"), style="danger"))
     text = (
@@ -149,13 +159,25 @@ async def _settings_text_and_keyboard(chat_id: int, invoker_id: int):
 
 
 async def _render_main(message: Message, invoker_id: int, edit: bool):
+    kb = _main_keyboard(invoker_id)
     if edit:
-        await bot.edit_message_text(
-            MAIN_TEXT, chat_id=message.chat.id, message_id=message.message_id,
-            reply_markup=_main_keyboard(invoker_id),
-        )
+        await _edit_call_message(message.chat.id, message.message_id, message.content_type, MAIN_TEXT, kb)
     else:
-        await bot.reply_to(message, MAIN_TEXT, reply_markup=_main_keyboard(invoker_id))
+        banner = await db.get_asset("panel_banner")
+        if banner:
+            await bot.send_photo(message.chat.id, banner, caption=MAIN_TEXT, reply_markup=kb, reply_to_message_id=message.message_id)
+        else:
+            await bot.reply_to(message, MAIN_TEXT, reply_markup=kb)
+
+
+async def _edit_call_message(chat_id: int, message_id: int, content_type: str, text: str, kb: InlineKeyboardMarkup):
+    """Edits the panel message in place, whether it's plain text or a photo
+    with a caption (پنل بنر - see "ثبت تصویر panel_banner"). Mirrors the
+    same pattern used by /start and «راهنما»."""
+    if content_type == "photo":
+        await bot.edit_message_caption(caption=text, chat_id=chat_id, message_id=message_id, reply_markup=kb)
+    else:
+        await bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=kb)
 
 
 @bot.message_handler(
@@ -181,16 +203,20 @@ async def panel_callback(call: CallbackQuery):
 
     chat_id = call.message.chat.id
     msg_id = call.message.message_id
+    content_type = call.message.content_type
+
+    async def edit(text: str, kb: InlineKeyboardMarkup):
+        await _edit_call_message(chat_id, msg_id, content_type, text, kb)
 
     if not parts or parts[0] == "main":
-        await bot.edit_message_text(MAIN_TEXT, chat_id=chat_id, message_id=msg_id, reply_markup=_main_keyboard(invoker_id))
+        await edit(MAIN_TEXT, _main_keyboard(invoker_id))
         return
 
     if parts[0] == "close":
         try:
             await bot.delete_message(chat_id, msg_id)
         except Exception:
-            await bot.edit_message_text("پنل بسته شد.", chat_id=chat_id, message_id=msg_id)
+            await edit("پنل بسته شد.", InlineKeyboardMarkup())
         return
 
     if parts[0] == "help":
@@ -204,7 +230,7 @@ async def panel_callback(call: CallbackQuery):
             new_state = not is_lock_enabled(locks_row, lock_key)
             await db.set_chat_lock(chat_id, lock_key, new_state)
         text, kb = await _locks_text_and_keyboard(chat_id, invoker_id)
-        await bot.edit_message_text(text, chat_id=chat_id, message_id=msg_id, reply_markup=kb)
+        await edit(text, kb)
         return
 
     if parts[0] == "lists":
@@ -220,11 +246,11 @@ async def panel_callback(call: CallbackQuery):
                 text = await text_fn(chat_id)
                 kb = InlineKeyboardMarkup()
                 kb.add(InlineKeyboardButton("⬅️ بازگشت", callback_data=encode(invoker_id, "lists"), style="danger"))
-                await bot.edit_message_text(text, chat_id=chat_id, message_id=msg_id, reply_markup=kb)
+                await edit(text, kb)
                 return
-        await bot.edit_message_text(
+        await edit(
             "📋 <b>لیست‌ها</b>\n\nیک مورد را انتخاب کنید:",
-            chat_id=chat_id, message_id=msg_id, reply_markup=_lists_menu_keyboard(invoker_id),
+            _lists_menu_keyboard(invoker_id),
         )
         return
 
@@ -239,5 +265,5 @@ async def panel_callback(call: CallbackQuery):
             elif key == "captcha":
                 await db.set_join_captcha_enabled(chat_id, not s["join_captcha_enabled"])
         text, kb = await _settings_text_and_keyboard(chat_id, invoker_id)
-        await bot.edit_message_text(text, chat_id=chat_id, message_id=msg_id, reply_markup=kb)
+        await edit(text, kb)
         return
