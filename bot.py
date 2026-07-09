@@ -14,7 +14,6 @@ import asyncio
 import logging
 
 from aiohttp import web
-from telebot.types import BotCommand
 
 from config import BOT_TOKEN, WEBAPP_HOST, WEBAPP_PORT, WEBHOOK_PATH, WEBHOOK_URL
 from core import bot, db
@@ -38,24 +37,22 @@ logger = logging.getLogger("bot")
 
 
 async def _set_command_menu():
-    """Populates the little '/' menu button in Telegram clients."""
+    """
+    Every command in this bot is now plain Persian text («بن», «پنل»،
+    «راهنما», ...) instead of a "/" command - see handlers/*.py. So there's
+    nothing left to put in Telegram's "/" command-menu popup; we explicitly
+    clear it (delete_my_commands) rather than leave stale "/ban", "/help",
+    etc. entries that would look tappable but no longer do anything.
+
+    NOTE: "/start" itself still technically works (see handlers/
+    start_command.py for why - it's a platform mechanic, not a real
+    command) but is deliberately NOT listed here, since it isn't something
+    a person is meant to type by hand.
+    """
     try:
-        await bot.set_my_commands(
-            [
-                BotCommand("start", "معرفی ربات"),
-                BotCommand("help", "راهنمای کامل"),
-                BotCommand("panel", "پنل تنظیمات گروه (فقط ادمین‌ها)"),
-                BotCommand("profile", "پروفایل کاربر - آیدی و آمار (فقط ادمین‌ها، ریپلای کنید)"),
-                BotCommand("ban", "اخراج و بن کاربر (ریپلای کنید)"),
-                BotCommand("unban", "رفع بن کاربر"),
-                BotCommand("mute", "سکوت کاربر (ریپلای کنید)"),
-                BotCommand("unmute", "رفع سکوت کاربر"),
-                BotCommand("warn", "اخطار به کاربر (ریپلای کنید)"),
-                BotCommand("admins", "لیست ادمین‌های گروه"),
-            ]
-        )
+        await bot.delete_my_commands()
     except Exception as e:
-        logger.warning("Could not set command menu: %s", e)
+        logger.warning("Could not clear command menu: %s", e)
 
 
 ALLOWED_UPDATES = ["message", "callback_query", "my_chat_member", "chat_join_request"]

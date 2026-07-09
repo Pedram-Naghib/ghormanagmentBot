@@ -161,7 +161,7 @@ class StatsMiddleware(BaseMiddleware):
 
         # 4) A regular message (not a join/leave service message) -> count it.
         elif message.from_user and not message.from_user.is_bot:
-            await db.log_message(message.chat.id, message.from_user.id)
+            await db.log_message(message.chat.id, message.from_user.id, message.message_id)
 
     async def post_process(self, message: Message, data: dict, exception=None):
         pass
@@ -196,7 +196,7 @@ async def on_bot_added_to_chat(update: ChatMemberUpdated):
                 f"لطفاً از تنظیمات گروه من رو <b>ادمین</b> کنید (حداقل با دسترسی‌های «حذف پیام»، "
                 f"«محدود کردن اعضا» و «دعوت با لینک»). بدون این دسترسی‌ها، دستورات مدیریتی "
                 f"در این گروه کار نمی‌کنن.\n\n"
-                f"برای شروع بنویسید: /help یا /panel",
+                f"برای شروع بنویسید: «راهنما» یا «پنل»",
             )
         except Exception:
             pass

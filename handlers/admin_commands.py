@@ -29,9 +29,10 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from telebot.types import ChatPermissions, Message
+from telebot.types import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from core import bot, db
+from utils.invoker_lock import decode as invoker_decode, encode as invoker_encode, verify as invoker_verify
 from utils.permissions import (
     can_manage_chat_roles,
     is_authorized_admin,
@@ -39,46 +40,52 @@ from utils.permissions import (
     is_group_admin,
 )
 from utils.telegram_errors import bot_permission_error_reply
-from utils.text import normalize_fa, normalize_trigger
+from utils.text import matches_command, normalize_fa, normalize_trigger
 
 # --- Trigger words (all already correct Persian - see utils/text.py) ---
-# Every command is reachable BOTH as a "/" command AND as one or more plain
-# Persian text synonyms - both forms are just added to the same trigger
-# set/prefix, so no separate registration is needed for the "/" form.
-BAN_TRIGGERS = {"کیک", "بن", "اخراج", "سیک", "/ban", "/kick"}
-MUTE_TRIGGERS = {"میوت", "سکوت", "/mute"}
-UNMUTE_TRIGGERS = {"آنمیوت", "رفع سکوت", "رفع میوت", "/unmute"}
-UNBAN_PREFIXES = ("رفع بن", "آنبن", "/unban")
-VIP_TRIGGERS = {"تنظیم ویژه", "/vip"}
-UNVIP_TRIGGERS = {"لغو ویژه", "/unvip"}
-ADD_ADMIN_TRIGGERS = {"افزودن ادمین گروه", "افزودن ادمین", "/addadmin"}
-REMOVE_ADMIN_TRIGGERS = {"حذف ادمین گروه", "حذف ادمین", "/removeadmin"}
-LIST_ADMIN_TRIGGERS = {"لیست ادمین های گروه", "لیست ادمین ها", "/admins"}
-SHOW_OWNER_TRIGGERS = {"مالک این گروه", "مالک گروه", "/owner"}
-CLAIM_OWNER_TRIGGERS = {"ادعای مالکیت", "/claimowner"}
+# Plain Persian text only - no "/" commands (see bot.py). A command is
+# either an EXACT match to one of these words, or - where explicitly noted
+# (بن/کیک/اخراج/سیک + میوت) - the word plus one fixed-format argument
+# (an "@username" or, for میوت only, a plain integer). See matches_command()
+# in utils/text.py.
+BAN_TRIGGERS = {"کیک", "بن", "اخراج", "سیک"}
+MUTE_TRIGGERS = {"میوت", "سکوت"}
+UNMUTE_TRIGGERS = {"آنمیوت", "رفع سکوت", "رفع میوت"}
+UNBAN_PREFIXES = ("رفع بن", "آنبن")
+VIP_TRIGGERS = {"تنظیم ویژه"}
+UNVIP_TRIGGERS = {"لغو ویژه"}
+ADD_ADMIN_TRIGGERS = {"افزودن ادمین گروه", "افزودن ادمین"}
+REMOVE_ADMIN_TRIGGERS = {"حذف ادمین گروه", "حذف ادمین"}
+LIST_ADMIN_TRIGGERS = {"لیست ادمین های گروه", "لیست ادمین ها"}
+SHOW_OWNER_TRIGGERS = {"مالک این گروه", "مالک گروه"}
+CLAIM_OWNER_TRIGGERS = {"ادعای مالکیت"}
 SET_OWNER_PREFIX = "تنظیم مالک"
 SET_SPAM_LIMIT_PREFIX_FA = "تنظیم تعداد پیام مجاز"
-SET_SPAM_LIMIT_PREFIX_SLASH = "/spamlimit"
 SET_SPAM_MUTE_PREFIX_FA = "تنظیم مدت سکوت اسپم"
-SET_SPAM_MUTE_PREFIX_SLASH = "/spammute"
-SHOW_SPAM_SETTINGS_TRIGGERS = {"تنظیمات اسپم", "/spamstatus"}
+SHOW_SPAM_SETTINGS_TRIGGERS = {"تنظیمات اسپم"}
 SET_IMAGE_PREFIX = "ثبت تصویر"
 
-WARN_TRIGGERS = {"اخطار", "/warn"}
-CLEAR_WARN_TRIGGERS = {"حذف اخطار", "پاک کردن اخطار", "/clearwarn"}
-LIST_WARN_TRIGGERS = {"لیست اخطار", "لیست اخطارها", "/warnlist"}
+WARN_TRIGGERS = {"اخطار"}
+CLEAR_WARN_TRIGGERS = {"حذف اخطار", "پاک کردن اخطار"}
+LIST_WARN_TRIGGERS = {"لیست اخطار", "لیست اخطارها"}
 WARN_LIMIT = 3  # auto-ban after this many active warnings
 
 ADD_FILTER_PREFIX = "افزودن کلمه فیلتر"
 REMOVE_FILTER_PREFIX = "حذف کلمه فیلتر"
-LIST_FILTER_TRIGGERS = {"لیست کلمات فیلتر", "/filterlist"}
+LIST_FILTER_TRIGGERS = {"لیست کلمات فیلتر"}
 
 SET_WELCOME_PREFIX = "تنظیم خوش آمدگویی"
-WELCOME_ON_TRIGGERS = {"روشن کردن خوش آمدگویی", "/welcomeon"}
-WELCOME_OFF_TRIGGERS = {"خاموش کردن خوش آمدگویی", "/welcomeoff"}
+WELCOME_ON_TRIGGERS = {"روشن کردن خوش آمدگویی"}
+WELCOME_OFF_TRIGGERS = {"خاموش کردن خوش آمدگویی"}
 SET_GOODBYE_PREFIX = "تنظیم بدرود"
-GOODBYE_ON_TRIGGERS = {"روشن کردن بدرود", "/goodbyeon"}
-GOODBYE_OFF_TRIGGERS = {"خاموش کردن بدرود", "/goodbyeoff"}
+GOODBYE_ON_TRIGGERS = {"روشن کردن بدرود"}
+GOODBYE_OFF_TRIGGERS = {"خاموش کردن بدرود"}
+
+# --- New commands ---
+PING_TRIGGERS = {"پینگ"}
+CONFIGURE_TRIGGERS = {"پیکربندی"}  # adds every real Telegram admin as a bot admin
+CLEANUP_ADMINS_TRIGGERS = {"پاک سازی"}  # removes every bot admin in this chat
+DELETE_ALL_TRIGGERS = {"حذف کل"}  # wipes every message the bot has logged (needs confirmation)
 
 DEFAULT_MUTE_SECONDS = 24 * 60 * 60  # fallback only - see mute_user for the real default (forever)
 
@@ -211,19 +218,27 @@ async def _refuse_if_protected(message: Message, target: _TargetRef) -> bool:
 # BAN (kick + ban combined - see module docstring above)
 # ---------------------------------------------------------------- #
 
-@bot.message_handler(
-    chat_types=["group", "supergroup"],
-    func=lambda m: (t := normalize_trigger(m.text or "").strip())
-    and (t in BAN_TRIGGERS or any(t.startswith(trig + " ") for trig in BAN_TRIGGERS)),
-)
+def _ban_trigger_matches(text: str) -> bool:
+    """"کیک"/"بن"/"اخراج"/"سیک" alone, or exactly "<trigger> @username" -
+    nothing else (see utils/text.py's matches_command). This is why
+    "بن شدم" no longer bans whoever the message happens to be a reply to,
+    while "بن @username" keeps working as a fixed, deliberate format."""
+    return matches_command(normalize_trigger(text or ""), BAN_TRIGGERS, allow_mention=True)
+
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: _ban_trigger_matches(m.text or ""))
 async def ban_user(message: Message):
+    # Target is resolved via @username in the command itself, via reply, or
+    # by replying to a message that is itself a bare "@username" - see
+    # _resolve_target().
     if not await _require_admin(message):
         return
     target = await _resolve_target(message)
     if not target:
         await bot.reply_to(
             message,
-            "⚠️ برای اخراج و بن کردن کاربر، روی پیام او ریپلای کنید، یا بنویسید: <code>بن @username</code>",
+            "⚠️ برای اخراج و بن کردن کاربر، روی پیام او ریپلای کنید (یا روی پیامی که فقط "
+            "@username کاربر را دارد ریپلای کنید).",
         )
         return
     if await _refuse_if_protected(message, target):
@@ -243,10 +258,22 @@ async def ban_user(message: Message):
 # UNBAN — reply to any old message from the user, OR pass @username
 # ---------------------------------------------------------------- #
 
-@bot.message_handler(
-    chat_types=["group", "supergroup"],
-    func=lambda m: normalize_trigger(m.text or "").strip().startswith(UNBAN_PREFIXES),
-)
+def _unban_trigger_matches(text: str) -> bool:
+    """"رفع بن"/"آنبن" alone, or exactly "<trigger> @username" - nothing else."""
+    t = normalize_trigger(text or "").strip()
+    if not t:
+        return False
+    if t in UNBAN_PREFIXES:
+        return True
+    for prefix in UNBAN_PREFIXES:
+        if t.startswith(prefix + " "):
+            rest = t[len(prefix):].strip()
+            if re.fullmatch(r"@\w+", rest):
+                return True
+    return False
+
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: _unban_trigger_matches(m.text or ""))
 async def unban_user(message: Message):
     if not await _require_admin(message):
         return
@@ -285,11 +312,21 @@ async def unban_user(message: Message):
 #         "میوت 10" = 10 minutes
 # ---------------------------------------------------------------- #
 
-@bot.message_handler(
-    chat_types=["group", "supergroup"],
-    func=lambda m: (t := normalize_trigger(m.text or "").strip())
-    and (t in MUTE_TRIGGERS or any(t.startswith(trig + " ") for trig in MUTE_TRIGGERS)),
-)
+def _mute_trigger_matches(text: str) -> bool:
+    """"میوت"/"سکوت" alone, or exactly "میوت <digits>" (minutes) - nothing
+    else. Rejects things like "میوت شدم" (ordinary Persian sentence
+    fragment) which used to falsely match just because it started with
+    "میوت "."""
+    t = normalize_trigger(text or "").strip()
+    if not t:
+        return False
+    if t in MUTE_TRIGGERS:
+        return True
+    parts = t.split()
+    return len(parts) == 2 and parts[0] in MUTE_TRIGGERS and parts[1].isdigit()
+
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: _mute_trigger_matches(m.text or ""))
 async def mute_user(message: Message):
     if not await _require_admin(message):
         return
@@ -448,8 +485,8 @@ ADMIN_CAPABILITIES_TEXT = (
     "• کلمات فیلتر (افزودن/حذف/لیست کلمه فیلتر)\n"
     "• دیدن پروفایل و آیدی اعضا (پروفایل)\n"
     "• تنظیمات ضد اسپم، خوش‌آمدگویی/بدرود و کپچای عضویت\n"
-    "• دسترسی به پنل تنظیمات گروه (/panel)\n\n"
-    "برای دیدن لیست کامل دستورات بنویس: /help"
+    "• دسترسی به پنل تنظیمات گروه («پنل»)\n\n"
+    "برای دیدن لیست کامل دستورات بنویس: «راهنما»"
 )
 
 
@@ -522,14 +559,13 @@ async def list_admins(message: Message):
 
 @bot.message_handler(
     chat_types=["group", "supergroup"],
-    func=lambda m: normalize_trigger(m.text or "").strip().startswith((SET_SPAM_LIMIT_PREFIX_FA, SET_SPAM_LIMIT_PREFIX_SLASH)),
+    func=lambda m: normalize_trigger(m.text or "").strip().startswith(SET_SPAM_LIMIT_PREFIX_FA),
 )
 async def set_spam_limit(message: Message):
     if not await _require_admin(message):
         return
     text = _norm(message)
-    prefix = SET_SPAM_LIMIT_PREFIX_SLASH if text.startswith(SET_SPAM_LIMIT_PREFIX_SLASH) else SET_SPAM_LIMIT_PREFIX_FA
-    arg = text[len(prefix):].strip()
+    arg = text[len(SET_SPAM_LIMIT_PREFIX_FA):].strip()
     if not arg.isdigit():
         current = await db.get_chat_settings(message.chat.id)
         await bot.reply_to(
@@ -547,14 +583,13 @@ async def set_spam_limit(message: Message):
 
 @bot.message_handler(
     chat_types=["group", "supergroup"],
-    func=lambda m: normalize_trigger(m.text or "").strip().startswith((SET_SPAM_MUTE_PREFIX_FA, SET_SPAM_MUTE_PREFIX_SLASH)),
+    func=lambda m: normalize_trigger(m.text or "").strip().startswith(SET_SPAM_MUTE_PREFIX_FA),
 )
 async def set_spam_mute(message: Message):
     if not await _require_admin(message):
         return
     text = _norm(message)
-    prefix = SET_SPAM_MUTE_PREFIX_SLASH if text.startswith(SET_SPAM_MUTE_PREFIX_SLASH) else SET_SPAM_MUTE_PREFIX_FA
-    arg = text[len(prefix):].strip()
+    arg = text[len(SET_SPAM_MUTE_PREFIX_FA):].strip()
     if not arg.isdigit():
         current = await db.get_chat_settings(message.chat.id)
         await bot.reply_to(
@@ -614,37 +649,27 @@ async def set_image(message: Message):
 # WARNINGS (اخطار) — reply to warn; WARN_LIMIT active warnings = auto-ban
 # ---------------------------------------------------------------- #
 
-def _extract_reason(message: Message, triggers) -> str:
-    text = _norm(message)
-    for trig in sorted(triggers, key=len, reverse=True):
-        if text == trig:
-            return None
-        if text.startswith(trig + " "):
-            return text[len(trig):].strip() or None
-    return None
-
-
 @bot.message_handler(
     chat_types=["group", "supergroup"],
-    func=lambda m: (t := normalize_trigger(m.text or "").strip())
-    and (t in WARN_TRIGGERS or any(t.startswith(trig + " ") for trig in WARN_TRIGGERS)),
+    func=lambda m: normalize_trigger(m.text or "").strip() in WARN_TRIGGERS,
 )
 async def warn_user(message: Message):
+    # Exact match only - "اخطار" must be the ENTIRE message (see the
+    # module-level note on this file). An inline free-text reason used to
+    # be supported ("اخطار فلان دلیل") but that meant any admin casually
+    # typing a sentence starting with "اخطار" while replying to someone
+    # would silently warn that person - removed on purpose.
     if not await _require_admin(message):
         return
     target = await _resolve_target(message)
     if not target:
-        await bot.reply_to(
-            message,
-            "⚠️ برای اخطار دادن به کاربر، روی پیام او ریپلای کنید یا بنویسید: <code>اخطار @username</code>",
-        )
+        await bot.reply_to(message, "⚠️ برای اخطار دادن به کاربر، روی پیام او ریپلای کنید.")
         return
     if await _refuse_if_protected(message, target):
         return
 
-    reason = _extract_reason(message, WARN_TRIGGERS)
-    count = await db.add_warning(message.chat.id, target.id, message.from_user.id, reason)
-    reason_line = f"\nدلیل: {reason}" if reason else ""
+    count = await db.add_warning(message.chat.id, target.id, message.from_user.id, None)
+    reason_line = ""
 
     if count >= WARN_LIMIT:
         try:
@@ -807,7 +832,7 @@ async def set_welcome_text(message: Message):
     await bot.reply_to(message, confirmation)
 
 
-@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip() in {"حذف رسانه خوش آمدگویی", "/clearwelcomemedia"})
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip() in {"حذف رسانه خوش آمدگویی"})
 async def clear_welcome_media(message: Message):
     if not await _require_admin(message):
         return
@@ -849,7 +874,7 @@ async def set_goodbye_text(message: Message):
     await bot.reply_to(message, confirmation)
 
 
-@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip() in {"حذف رسانه بدرود", "/cleargoodbyemedia"})
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip() in {"حذف رسانه بدرود"})
 async def clear_goodbye_media(message: Message):
     if not await _require_admin(message):
         return
@@ -877,7 +902,7 @@ async def goodbye_off(message: Message):
 # JOIN-REQUEST CAPTCHA — OFF by default (see handlers/captcha.py)
 # ---------------------------------------------------------------- #
 
-@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip() in {"روشن کردن کپچا", "/captchaon"})
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip() in {"روشن کردن کپچا"})
 async def captcha_on(message: Message):
     if not await _require_admin(message):
         return
@@ -889,9 +914,188 @@ async def captcha_on(message: Message):
     )
 
 
-@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip() in {"خاموش کردن کپچا", "/captchaoff"})
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip() in {"خاموش کردن کپچا"})
 async def captcha_off(message: Message):
     if not await _require_admin(message):
         return
     await db.set_join_captcha_enabled(message.chat.id, False)
     await bot.reply_to(message, "✅ کپچای عضویت غیرفعال شد.")
+
+
+# ---------------------------------------------------------------- #
+# PING — simple liveness check, open to everyone (no admin gate needed)
+# ---------------------------------------------------------------- #
+
+@bot.message_handler(chat_types=["group", "supergroup", "private"], func=lambda m: normalize_trigger(m.text or "").strip() in PING_TRIGGERS)
+async def ping(message: Message):
+    start = time.monotonic()
+    sent = await bot.reply_to(message, "🏓 پونگ...")
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+    try:
+        await bot.edit_message_text(
+            f"🏓 پونگ! ربات روشن و در حال کار است. (پاسخ در {elapsed_ms} میلی‌ثانیه)",
+            chat_id=message.chat.id, message_id=sent.message_id,
+        )
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------- #
+# پیکربندی — imports every REAL Telegram admin of this group as a bot
+# admin in one shot (for groups with many existing Telegram admins that
+# would otherwise need "افزودن ادمین گروه" repeated one-by-one).
+# پاک سازی — the reverse: strips bot-admin status from everyone currently
+# an admin in THIS chat (does not touch their real Telegram admin rights,
+# and does not touch the group owner).
+# Both restricted to whoever can manage roles here (group owner / Global
+# Owner) - same gate as "افزودن ادمین گروه" / "حذف ادمین گروه".
+# ---------------------------------------------------------------- #
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip() in CONFIGURE_TRIGGERS)
+async def configure_admins_from_telegram(message: Message):
+    if not await _require_role_manager(message):
+        await bot.reply_to(message, "⚠️ فقط مالک این گروه می‌تواند پیکربندی خودکار ادمین‌ها را اجرا کند.")
+        return
+    try:
+        members = await bot.get_chat_administrators(message.chat.id)
+    except Exception as e:
+        await bot.reply_to(message, bot_permission_error_reply(e))
+        return
+
+    added = []
+    for member in members:
+        user = member.user
+        if user.is_bot:
+            continue
+        current_role = await db.get_user_role(message.chat.id, user.id)
+        if current_role == "owner":
+            continue  # don't downgrade/overwrite the recorded group owner
+        await db.set_user_role(
+            message.chat.id, user.id, "admin",
+            username=user.username, first_name=user.first_name, last_name=user.last_name,
+        )
+        added.append(user.full_name if hasattr(user, "full_name") else (user.first_name or str(user.id)))
+
+    if not added:
+        await bot.reply_to(message, "هیچ ادمین تلگرامی (به‌جز مالک گروه) برای افزودن پیدا نشد.")
+        return
+    await bot.reply_to(
+        message,
+        "✅ ادمین‌های تلگرام این گروه به‌عنوان ادمین ربات ثبت شدند:\n" + "\n".join(f"• {n}" for n in added),
+    )
+
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip() in CLEANUP_ADMINS_TRIGGERS)
+async def cleanup_bot_admins(message: Message):
+    if not await _require_role_manager(message):
+        await bot.reply_to(message, "⚠️ فقط مالک این گروه می‌تواند ادمین‌های ربات را پاک‌سازی کند.")
+        return
+    admin_ids = await db.list_users_by_role(message.chat.id, "admin")
+    if not admin_ids:
+        await bot.reply_to(message, "هیچ ادمین ربات (جدا از مالک) برای این گروه ثبت نشده بود.")
+        return
+    for user_id in admin_ids:
+        await db.set_user_role(message.chat.id, user_id, "normal")
+    await bot.reply_to(message, f"✅ دسترسی ادمین ربات از {len(admin_ids)} نفر گرفته شد (مالک گروه دست‌نخورده ماند).")
+
+
+# ---------------------------------------------------------------- #
+# حذف {عدد} / حذف کل — bulk message deletion.
+#
+# "حذف {عدد}" removes exactly the last {عدد} messages the bot has actually
+# logged in this chat (see database.py:get_recent_message_ids - a bot can
+# only ever delete messages it has itself observed, never a group's full
+# history from before it joined).
+#
+# "حذف کل" wipes EVERY logged message and needs an explicit confirmation
+# tap first (invoker-locked, same mechanism as /help - see
+# utils/invoker_lock.py) since it's irreversible and chat-wide.
+# ---------------------------------------------------------------- #
+
+DELETE_ALL_NAMESPACE = "delall"
+
+
+def _delete_count_trigger(text: str) -> Optional[int]:
+    """Returns N if `text` is EXACTLY "حذف {N}" (nothing else), else None."""
+    t = normalize_trigger(text or "").strip()
+    parts = t.split()
+    if len(parts) == 2 and parts[0] == "حذف" and parts[1].isdigit():
+        n = int(parts[1])
+        return n if n > 0 else None
+    return None
+
+
+async def _bulk_delete(chat_id: int, message_ids: list) -> int:
+    """Deletes message_ids in batches, tolerating already-gone/too-old ones
+    that Telegram refuses individually. Returns how many actually deleted."""
+    deleted = 0
+    CHUNK = 100
+    for i in range(0, len(message_ids), CHUNK):
+        chunk = message_ids[i:i + CHUNK]
+        try:
+            await bot.delete_messages(chat_id, chunk)
+            deleted += len(chunk)
+        except Exception:
+            for mid in chunk:
+                try:
+                    await bot.delete_message(chat_id, mid)
+                    deleted += 1
+                except Exception:
+                    pass
+    await db.delete_logged_messages(chat_id, message_ids)
+    return deleted
+
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: _delete_count_trigger(m.text or "") is not None)
+async def delete_recent_messages(message: Message):
+    if not await _require_admin(message):
+        return
+    n = _delete_count_trigger(message.text or "")
+    ids = await db.get_recent_message_ids(message.chat.id, n)
+    ids.append(message.message_id)  # also remove the "حذف N" command itself
+    deleted = await _bulk_delete(message.chat.id, ids)
+    await bot.send_message(message.chat.id, f"✅ {max(deleted - 1, 0)} پیام اخیر حذف شد.")
+
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip() in DELETE_ALL_TRIGGERS)
+async def delete_all_messages_prompt(message: Message):
+    if not await _require_admin(message):
+        return
+    kb = InlineKeyboardMarkup()
+    kb.add(
+        InlineKeyboardButton("بله، همه چیز حذف شود", callback_data=invoker_encode(DELETE_ALL_NAMESPACE, message.from_user.id, "yes"), style="danger"),
+        InlineKeyboardButton("انصراف", callback_data=invoker_encode(DELETE_ALL_NAMESPACE, message.from_user.id, "no"), style="success"),
+    )
+    await bot.reply_to(
+        message,
+        "⚠️ <b>این کار تمام پیام‌هایی که ربات از این گروه ثبت کرده را برای همیشه پاک می‌کند.</b>\n"
+        "(پیام‌های قبل از عضویت ربات یا قبل از این آپدیت قابل حذف نیستند - محدودیت خود تلگرام است.)\n\n"
+        "مطمئنید؟",
+        reply_markup=kb,
+    )
+
+
+@bot.callback_query_handler(func=lambda c: invoker_decode(c.data, DELETE_ALL_NAMESPACE) is not None)
+async def delete_all_messages_confirm(call):
+    invoker_id, parts = await invoker_verify(call, DELETE_ALL_NAMESPACE)
+    if invoker_id is None:
+        return
+    # Defense in depth: re-check live admin status, same as the panel does.
+    if not await is_authorized_admin(db, call.message.chat.id, invoker_id):
+        await bot.answer_callback_query(call.id, "⛔️ دسترسی مدیریتی شما در این گروه گرفته شده است.", show_alert=True)
+        return
+    await bot.answer_callback_query(call.id)
+
+    if parts == ["no"]:
+        await bot.edit_message_text("لغو شد. هیچ پیامی حذف نشد.", chat_id=call.message.chat.id, message_id=call.message.message_id)
+        return
+
+    if parts == ["yes"]:
+        await bot.edit_message_text("⏳ در حال حذف پیام‌ها...", chat_id=call.message.chat.id, message_id=call.message.message_id)
+        ids = await db.get_all_logged_message_ids(call.message.chat.id)
+        deleted = await _bulk_delete(call.message.chat.id, ids)
+        try:
+            await bot.delete_message(call.message.chat.id, call.message.message_id)
+        except Exception:
+            pass
+        await bot.send_message(call.message.chat.id, f"✅ {deleted} پیام حذف شد.")

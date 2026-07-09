@@ -5,6 +5,18 @@ handlers/start_command.py
 under the key "start_banner" (see "ثبت تصویر" in handlers/admin_commands.py),
 it's sent as a photo with the welcome text as its caption; the image itself
 never changes when the person taps a button below it.
+
+WHY "/start" STILL EXISTS DESPITE "NO SLASH COMMANDS": this one is not a
+user-typed command - Telegram's own client ALWAYS sends the literal text
+"/start" automatically the moment someone taps "Start" in a fresh DM or
+opens a "https://t.me/<bot>?startgroup=..." deep link. There is no text-
+only equivalent for that platform mechanic, so it has to stay wired up or
+the "add me to your group" flow (and opening a DM with the bot at all)
+would simply stop working. It is NOT exposed in the bot's "/" command
+menu (see bot.py) and is not something admins are meant to type by hand.
+
+SECURITY: the "راهنمای کامل" button is invoker-locked (utils/invoker_lock.py) -
+only the person who ran /start can press it.
 """
 
 from telebot.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -12,6 +24,9 @@ from telebot.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from config import SUPPORT_URL
 from core import bot, db
 from handlers.help_command import send_help
+from utils.invoker_lock import encode, verify
+
+NAMESPACE = "strt"
 
 _bot_username_cache = None
 
@@ -40,7 +55,7 @@ def _start_text(first_name: str) -> str:
     )
 
 
-async def _start_keyboard() -> InlineKeyboardMarkup:
+async def _start_keyboard(invoker_id: int) -> InlineKeyboardMarkup:
     username = await _get_bot_username()
     kb = InlineKeyboardMarkup(row_width=1)
 
@@ -49,7 +64,7 @@ async def _start_keyboard() -> InlineKeyboardMarkup:
         f"&admin=delete_messages+restrict_members+invite_users"
     )
     kb.add(InlineKeyboardButton("➕ افزودن به گروه", url=add_url))
-    kb.add(InlineKeyboardButton("📖 راهنمای کامل", callback_data="show_help"))
+    kb.add(InlineKeyboardButton("📖 راهنمای کامل", callback_data=encode(NAMESPACE, invoker_id, "show_help")))
     if SUPPORT_URL:
         kb.add(InlineKeyboardButton("💬 پشتیبانی", url=SUPPORT_URL))
     return kb
@@ -57,8 +72,9 @@ async def _start_keyboard() -> InlineKeyboardMarkup:
 
 @bot.message_handler(commands=["start"])
 async def start_command(message: Message):
+    invoker_id = message.from_user.id if message.from_user else 0
     text = _start_text(message.from_user.first_name if message.from_user else "")
-    keyboard = await _start_keyboard()
+    keyboard = await _start_keyboard(invoker_id)
     banner = await db.get_asset("start_banner")
     if banner:
         await bot.send_photo(message.chat.id, banner, caption=text, reply_markup=keyboard)
@@ -66,7 +82,10 @@ async def start_command(message: Message):
         await bot.reply_to(message, text, reply_markup=keyboard)
 
 
-@bot.callback_query_handler(func=lambda c: c.data == "show_help")
+@bot.callback_query_handler(func=lambda c: c.data.startswith(f"{NAMESPACE}:") and c.data.split(":")[2:3] == ["show_help"])
 async def start_show_help(call: CallbackQuery):
+    invoker_id, _parts = await verify(call, NAMESPACE)
+    if invoker_id is None:
+        return
     await bot.answer_callback_query(call.id)
-    await send_help(call.message.chat.id)
+    await send_help(call.message.chat.id, invoker_id)

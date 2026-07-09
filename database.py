@@ -106,6 +106,20 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_msg_logs_chat_user_time "
                 "ON message_logs (chat_id, user_id, sent_at);"
             )
+            # message_id is needed so "حذف {عدد}"/"حذف کل" (bulk delete) can
+            # actually find which real Telegram messages to delete. Only
+            # rows logged AFTER this column existed will have it populated -
+            # older rows (and any message sent before the bot ever saw it)
+            # stay NULL and are simply skipped, since a bot can only ever
+            # delete messages it has actually observed (Telegram gives bots
+            # no "list this chat's history" API).
+            await conn.execute(
+                "ALTER TABLE message_logs ADD COLUMN IF NOT EXISTS message_id BIGINT;"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_msg_logs_chat_time_id "
+                "ON message_logs (chat_id, sent_at, message_id);"
+            )
             await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS member_logs (
@@ -310,7 +324,7 @@ class Database:
     # MESSAGE TRACKING
     # ---------------------------------------------------------------- #
 
-    async def log_message(self, chat_id: int, user_id: int):
+    async def log_message(self, chat_id: int, user_id: int, message_id: Optional[int] = None):
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
@@ -323,7 +337,8 @@ class Database:
                     chat_id, user_id,
                 )
                 await conn.execute(
-                    "INSERT INTO message_logs (chat_id, user_id) VALUES ($1, $2)", chat_id, user_id
+                    "INSERT INTO message_logs (chat_id, user_id, message_id) VALUES ($1, $2, $3)",
+                    chat_id, user_id, message_id,
                 )
 
     async def get_user_message_count(
@@ -340,6 +355,57 @@ class Database:
                 "SELECT COUNT(*) FROM message_logs WHERE chat_id=$1 AND user_id=$2 AND sent_at >= $3",
                 chat_id, user_id, since,
             )
+
+    async def get_recent_message_ids(self, chat_id: int, limit: int) -> List[int]:
+        """Most recent `limit` message_ids the bot has actually logged for
+        this chat (newest first), skipping rows from before this column
+        existed (message_id IS NULL there - see _init_schema)."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT message_id FROM message_logs
+                WHERE chat_id=$1 AND message_id IS NOT NULL
+                ORDER BY sent_at DESC LIMIT $2
+                """,
+                chat_id, limit,
+            )
+        return [r["message_id"] for r in rows]
+
+    async def get_all_logged_message_ids(self, chat_id: int) -> List[int]:
+        """Every message_id the bot has ever logged for this chat - used by
+        «حذف کل». NOTE: this can only ever cover messages sent since the bot
+        started logging them; Telegram gives bots no way to enumerate a
+        chat's full history from before that."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT message_id FROM message_logs WHERE chat_id=$1 AND message_id IS NOT NULL",
+                chat_id,
+            )
+        return [r["message_id"] for r in rows]
+
+    async def delete_logged_messages(self, chat_id: int, message_ids: List[int]):
+        """Removes the log rows for message_ids we just deleted from Telegram,
+        so a repeated «حذف کل» doesn't try to re-delete the same ids."""
+        if not message_ids:
+            return
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM message_logs WHERE chat_id=$1 AND message_id = ANY($2::bigint[])",
+                chat_id, message_ids,
+            )
+
+    async def get_recently_joined_members(self, chat_id: int, since: datetime) -> List[Tuple[int, datetime]]:
+        """[(user_id, joined_at), ...] for members who joined this chat at/after `since`."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT user_id, joined_at FROM group_users
+                WHERE chat_id=$1 AND joined_at >= $2
+                ORDER BY joined_at DESC
+                """,
+                chat_id, since,
+            )
+        return [(r["user_id"], r["joined_at"]) for r in rows]
 
     # ---------------------------------------------------------------- #
     # MEMBER-ADDED TRACKING
@@ -361,6 +427,22 @@ class Database:
                     "INSERT INTO member_logs (chat_id, adder_id, new_member_id) VALUES ($1, $2, $3)",
                     chat_id, adder_id, new_member_id,
                 )
+
+    async def get_recently_added_members(
+        self, chat_id: int, since: datetime, limit: int = 20
+    ) -> List[Tuple[int, datetime]]:
+        """Members who JOINED this chat since `since` (newest first) - used
+        by the پروفایل screen's "اعضای تازه اضافه‌شده" panel."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT new_member_id AS user_id, added_at FROM member_logs
+                WHERE chat_id=$1 AND added_at >= $2
+                ORDER BY added_at DESC LIMIT $3
+                """,
+                chat_id, since, limit,
+            )
+        return [(r["user_id"], r["added_at"]) for r in rows]
 
     # ---------------------------------------------------------------- #
     # AGGREGATE STATS (آمار روزانه / آمار کل)

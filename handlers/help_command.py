@@ -1,12 +1,24 @@
 """
 handlers/help_command.py
 ---------------------------
-/help و راهنما — split into short sections behind inline buttons instead of
-one long wall of text. If an image is registered under the key
-"help_banner" (see "ثبت تصویر" in handlers/admin_commands.py), it's sent
-once as a photo and stays exactly as-is; only the caption and keyboard
-change as the person taps between sections (via editMessageCaption), so
-the image never re-sends or changes.
+راهنما — split into short sections behind inline buttons instead of one
+long wall of text. If an image is registered under the key "help_banner"
+(see "ثبت تصویر" in handlers/admin_commands.py), it's sent once as a photo
+and stays exactly as-is; only the caption and keyboard change as the person
+taps between sections (via editMessageCaption), so the image never
+re-sends or changes.
+
+SECURITY: every button here is invoker-locked (see utils/invoker_lock.py) -
+only the person who opened THIS help message (via «راهنما», /start's
+button, or the panel's «راهنما» button) can press its buttons. Anyone else
+tapping gets a small alert instead of silently acting as them.
+
+NOTE ON "/" COMMANDS: per project policy, this bot no longer registers any
+slash ("/") commands - text triggers only. There is exactly one unavoidable
+exception, handled in start_command.py, not here: Telegram itself always
+sends the literal text "/start" when a person taps "Start" in a DM or a
+deep link - that's a platform mechanic, not a user-typed command, so it
+still has to be caught.
 
 *** IMPORTANT: keep SECTIONS below in sync with what the bot actually
 does whenever a feature changes. ***
@@ -15,7 +27,10 @@ does whenever a feature changes. ***
 from telebot.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from core import bot, db
-from utils.text import normalize_fa, normalize_trigger
+from utils.invoker_lock import encode, verify
+from utils.text import normalize_trigger
+
+NAMESPACE = "help"
 
 OVERVIEW_TEXT = (
     "🤖 <b>راهنمای ربات مدیریت گروه</b>\n\n"
@@ -43,7 +58,7 @@ SECTIONS = {
     "panel": {
         "label": "🛠 پنل تنظیمات",
         "text": (
-            "🛠 <b>پنل تنظیمات (/panel یا «پنل»)</b>\n\n"
+            "🛠 <b>پنل تنظیمات («پنل»)</b>\n\n"
             "یک منوی دکمه‌ای برای مدیریت گروه بدون حفظ‌کردن دستورات متنی:\n"
             "• <b>قفل‌ها</b> → روشن/خاموش کردن حذف خودکار لینک، فوروارد، فایل، استیکر، "
             "ویس، گیف، مخاطب، نظرسنجی، هشتگ و منشن برای اعضای عادی\n"
@@ -57,21 +72,22 @@ SECTIONS = {
         "label": "👮‍♂️ دستورات مدیریتی",
         "text": (
             "👮‍♂️ <b>دستورات مدیریتی</b>\n"
-            "(روی پیام کاربر مورد نظر ریپلای کنید، یا @یوزرنیم را در دستور بنویسید - هر "
-            "دستور هم به‌صورت متن فارسی و هم به‌صورت دستور «/» کار می‌کند. برای کپی کردن "
-            "یک دستور، فقط کافیست روی متنش بزنید)\n\n"
-            "• <code>کیک</code> / <code>بن</code> / <code>اخراج</code> / <code>سیک</code> یا "
-            "<code>/ban</code> یا <code>/kick</code> → اخراج و بن\n"
-            "• <code>رفع بن</code>، <code>آنبن</code> یا <code>/unban</code> → خروج از بن\n"
-            "• <code>میوت</code> / <code>سکوت</code> یا <code>/mute</code> → سکوت تا زمانی که «رفع سکوت» شود\n"
+            "(روی پیام کاربر مورد نظر ریپلای کنید. برای کپی کردن یک دستور، فقط کافیست "
+            "روی متنش بزنید)\n\n"
+            "• <code>کیک</code> / <code>بن</code> / <code>اخراج</code> / <code>سیک</code> → "
+            "اخراج و بن (یا <code>بن @username</code>)\n"
+            "• <code>رفع بن</code> / <code>آنبن</code> → خروج از بن (یا <code>رفع بن @username</code>)\n"
+            "• <code>میوت</code> / <code>سکوت</code> → سکوت تا زمانی که «رفع سکوت» شود\n"
             "• <code>میوت 10</code> → سکوت فقط برای ۱۰ دقیقه (عدد دلخواه)\n"
-            "• <code>رفع سکوت</code>، <code>آنمیوت</code> یا <code>/unmute</code> → برداشتن سکوت\n"
-            "• <code>تنظیم ویژه</code> / <code>لغو ویژه</code> یا <code>/vip</code> /"
-            " <code>/unvip</code> → عضو ویژه کردن/برداشتن\n"
-            "• <code>اخطار</code> یا <code>/warn</code> (ریپلای، دلیل اختیاری) → اخطار؛ پس از ۳ اخطار بن خودکار\n"
+            "• <code>رفع سکوت</code> / <code>آنمیوت</code> → برداشتن سکوت\n"
+            "• <code>تنظیم ویژه</code> / <code>لغو ویژه</code> → عضو ویژه کردن/برداشتن\n"
+            "• <code>اخطار</code> (ریپلای) یا <code>اخطار @username</code> → اخطار؛ پس از ۳ اخطار بن خودکار\n"
             "• <code>حذف اخطار</code> یا <code>لیست اخطار</code>\n"
             "• <code>افزودن کلمه فیلتر [کلمه]</code> / <code>حذف کلمه فیلتر [کلمه]</code> / "
-            "<code>لیست کلمات فیلتر</code> → پیام‌های عادی حاوی این کلمات خودکار حذف می‌شوند\n\n"
+            "<code>لیست کلمات فیلتر</code> → پیام‌های عادی حاوی این کلمات خودکار حذف می‌شوند\n"
+            "• <code>پینگ</code> → بررسی زنده بودن ربات\n\n"
+            "⚠️ توجه: این دستورات فقط با متن دقیقاً همان کلمه (یا فرمت‌های ثابت بالا) کار "
+            "می‌کنند - مثلاً نوشتن «بن شدم» در یک جمله عادی هیچ اقدامی انجام نمی‌دهد.\n\n"
             "وقتی کسی ادمین می‌شود، ربات لیست کامل قابلیت‌هایی که برایش باز شده را برایش توضیح می‌دهد."
         ),
     },
@@ -79,11 +95,26 @@ SECTIONS = {
         "label": "🛠 مالکیت و ادمین‌ها",
         "text": (
             "🛠 <b>مالکیت و ادمین‌های گروه</b>\n\n"
-            "• <code>مالک این گروه</code> یا <code>/owner</code> → نمایش مالک فعلی\n"
-            "• <code>ادعای مالکیت</code> یا <code>/claimowner</code> → برای گروه‌هایی که مالک ثبت‌شده ندارند\n"
+            "• <code>مالک این گروه</code> → نمایش مالک فعلی\n"
+            "• <code>ادعای مالکیت</code> → برای گروه‌هایی که مالک ثبت‌شده ندارند\n"
             "• <code>افزودن ادمین گروه</code> (ریپلای، فقط مالک گروه)\n"
             "• <code>حذف ادمین گروه</code> (ریپلای، فقط مالک گروه)\n"
-            "• <code>لیست ادمین های گروه</code> یا <code>/admins</code>"
+            "• <code>لیست ادمین های گروه</code>\n"
+            "• <code>پیکربندی</code> (فقط مالک گروه) → همهٔ ادمین‌های واقعی تلگرام این گروه را "
+            "به‌عنوان ادمین ربات اضافه می‌کند\n"
+            "• <code>پاک سازی</code> (فقط مالک گروه) → همهٔ ادمین‌های ربات را از این گروه حذف "
+            "می‌کند (مالک گروه دست‌نخورده می‌ماند)"
+        ),
+    },
+    "danger": {
+        "label": "🗑 حذف پیام‌ها",
+        "text": (
+            "🗑 <b>حذف پیام‌ها</b> (فقط ادمین‌های ربات)\n\n"
+            "• <code>حذف [عدد]</code> → حذف همان تعداد پیام اخیر گروه (مثلاً <code>حذف 20</code>)\n"
+            "• <code>حذف کل</code> → حذف تمام پیام‌های ثبت‌شدهٔ گروه (قبل از اجرا یک تاییدیه "
+            "از شما گرفته می‌شود)\n\n"
+            "⚠️ تلگرام فقط اجازهٔ حذف پیام‌های حداکثر ۴۸ ساعت اخیر را می‌دهد؛ پیام‌های "
+            "قدیمی‌تر توسط خودِ تلگرام قابل حذف نیستند، حتی برای ادمین‌ها."
         ),
     },
     "welcome": {
@@ -118,8 +149,8 @@ SECTIONS = {
             "مخصوص گروه‌هایی که «تایید درخواست عضویت» تلگرام را فعال کرده‌اند. وقتی روشن باشد، "
             "ربات برای هرکسی که درخواست عضویت می‌دهد یک سؤال ریاضی ساده در پیوی می‌فرستد؛ اگر ظرف "
             "۱ دقیقه درست جواب دهد درخواستش خودکار تایید می‌شود، وگرنه رد می‌شود.\n\n"
-            "• <code>روشن کردن کپچا</code> یا <code>/captchaon</code>\n"
-            "• <code>خاموش کردن کپچا</code> یا <code>/captchaoff</code>"
+            "• <code>روشن کردن کپچا</code>\n"
+            "• <code>خاموش کردن کپچا</code>"
         ),
     },
     "stats": {
@@ -134,78 +165,92 @@ SECTIONS = {
         "label": "👤 پروفایل",
         "text": (
             "👤 <b>پروفایل کاربر</b> (فقط ادمین‌های ربات)\n\n"
-            "روی پیام کسی ریپلای کنید و بنویسید <code>پروفایل</code> (یا <code>/profile</code>) تا نام، "
-            "آیدی عددی، عکس، نقش او در این گروه و آمار پیام‌هایش را ببینید."
+            "روی پیام کسی ریپلای کنید و بنویسید <code>پروفایل</code> تا نام، آیدی عددی، عکس، "
+            "نقش او در این گروه و آمار پیام‌هایش را ببینید.\n\n"
+            "پایین همین پیام، اعضای تازه‌اضافه‌شده به گروه در ۲۴ ساعت اخیر و ۳ نفر برتر در "
+            "اضافه‌کردن عضو هم نشان داده می‌شود."
         ),
     },
 }
 
 
-def _main_keyboard() -> InlineKeyboardMarkup:
+def _main_keyboard(invoker_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=2)
-    buttons = [InlineKeyboardButton(s["label"], callback_data=f"help:{key}") for key, s in SECTIONS.items()]
+    buttons = [
+        InlineKeyboardButton(s["label"], callback_data=encode(NAMESPACE, invoker_id, "section", key))
+        for key, s in SECTIONS.items()
+    ]
     kb.add(*buttons)
     return kb
 
 
-def _section_keyboard() -> InlineKeyboardMarkup:
+def _section_keyboard(invoker_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("🔴 بازگشت", callback_data="help:main"))
+    kb.add(InlineKeyboardButton("بازگشت", callback_data=encode(NAMESPACE, invoker_id, "main"), style="danger"))
     return kb
 
 
-async def send_help(chat_id: int, reply_to_message_id: int = None):
-    """Shared entry point - used by /help, راهنما, and /start's help button."""
+async def send_help(chat_id: int, invoker_id: int, reply_to_message_id: int = None):
+    """Shared entry point - used by «راهنما», /start's help button, and the panel's help button."""
     banner = await db.get_asset("help_banner")
+    keyboard = _main_keyboard(invoker_id)
     if banner:
         await bot.send_photo(
-            chat_id, banner, caption=OVERVIEW_TEXT, reply_markup=_main_keyboard(),
+            chat_id, banner, caption=OVERVIEW_TEXT, reply_markup=keyboard,
             reply_to_message_id=reply_to_message_id,
         )
     else:
         await bot.send_message(
-            chat_id, OVERVIEW_TEXT, reply_markup=_main_keyboard(),
+            chat_id, OVERVIEW_TEXT, reply_markup=keyboard,
             reply_to_message_id=reply_to_message_id,
         )
 
 
-@bot.message_handler(commands=["help"])
-async def help_command(message: Message):
-    await send_help(message.chat.id, reply_to_message_id=message.message_id)
-
-
 @bot.message_handler(func=lambda m: normalize_trigger(m.text or "").strip() == "راهنما")
 async def help_command_fa(message: Message):
-    await send_help(message.chat.id, reply_to_message_id=message.message_id)
+    await send_help(message.chat.id, message.from_user.id, reply_to_message_id=message.message_id)
 
 
-@bot.callback_query_handler(func=lambda c: c.data == "help:main")
+@bot.callback_query_handler(func=lambda c: c.data.startswith(f"{NAMESPACE}:") and c.data.split(":")[2:3] == ["main"])
 async def help_back_to_main(call: CallbackQuery):
+    invoker_id, _parts = await verify(call, NAMESPACE)
+    if invoker_id is None:
+        return
     await bot.answer_callback_query(call.id)
+    kb = _main_keyboard(invoker_id)
     if call.message.content_type == "photo":
         await bot.edit_message_caption(
             caption=OVERVIEW_TEXT, chat_id=call.message.chat.id,
-            message_id=call.message.message_id, reply_markup=_main_keyboard(),
+            message_id=call.message.message_id, reply_markup=kb,
         )
     else:
         await bot.edit_message_text(
             OVERVIEW_TEXT, chat_id=call.message.chat.id,
-            message_id=call.message.message_id, reply_markup=_main_keyboard(),
+            message_id=call.message.message_id, reply_markup=kb,
         )
 
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("help:") and c.data.split(":", 1)[1] in SECTIONS)
+@bot.callback_query_handler(
+    func=lambda c: c.data.startswith(f"{NAMESPACE}:")
+    and len(c.data.split(":")) >= 4
+    and c.data.split(":")[2] == "section"
+    and c.data.split(":")[3] in SECTIONS
+)
 async def help_show_section(call: CallbackQuery):
-    key = call.data.split(":", 1)[1]
+    invoker_id, parts = await verify(call, NAMESPACE)
+    if invoker_id is None:
+        return
+    key = parts[1]
     section = SECTIONS[key]
     await bot.answer_callback_query(call.id)
+    kb = _section_keyboard(invoker_id)
     if call.message.content_type == "photo":
         await bot.edit_message_caption(
             caption=section["text"], chat_id=call.message.chat.id,
-            message_id=call.message.message_id, reply_markup=_section_keyboard(),
+            message_id=call.message.message_id, reply_markup=kb,
         )
     else:
         await bot.edit_message_text(
             section["text"], chat_id=call.message.chat.id,
-            message_id=call.message.message_id, reply_markup=_section_keyboard(),
+            message_id=call.message.message_id, reply_markup=kb,
         )

@@ -74,3 +74,61 @@ def normalize_trigger(text: str) -> str:
     alone) for anything that compares message text against a command/
     trigger word or prefix, whether Persian text or a "/" command."""
     return strip_bot_mention(normalize_fa(text))
+
+
+def matches_command(
+    text: str,
+    triggers,
+    *,
+    allow_mention: bool = False,
+    allow_minutes: bool = False,
+) -> bool:
+    """
+    True if `text` (already normalize_trigger()'d) is a legitimate
+    invocation of one of `triggers`.
+
+    Policy: a reply-based command may ONLY be the trigger word by itself -
+    or, if it explicitly supports it, the trigger word plus up to two
+    FIXED-FORMAT arguments (an "@username" mention and/or a plain integer
+    for a duration in minutes). Anything else after the trigger - i.e. an
+    ordinary continuation of a sentence, like "بن شدم" ("I got banned") -
+    is NOT a match, so the bot doesn't misfire on normal conversation that
+    merely starts with a trigger word.
+
+    Examples with triggers={"بن"}, allow_mention=True:
+        "بن"              -> True  (exact)
+        "بن @user"        -> True  (fixed mention format)
+        "بن شدم"          -> False (free text, not a mention/number)
+
+    Examples with triggers={"میوت"}, allow_mention=True, allow_minutes=True:
+        "میوت"            -> True
+        "میوت 10"         -> True
+        "میوت @user"      -> True
+        "میوت @user 10"   -> True
+        "میوت واقعا"      -> False
+    """
+    text = text.strip()
+    if text in triggers:
+        return True
+
+    for trig in triggers:
+        if not text.startswith(trig + " "):
+            continue
+        rest = text[len(trig):].strip()
+        if not rest:
+            return True  # trigger + only whitespace still counts as exact
+
+        tokens = rest.split()
+        if len(tokens) > 2:
+            return False
+        valid = True
+        for tok in tokens:
+            if allow_mention and tok.startswith("@") and len(tok) > 1:
+                continue
+            if allow_minutes and tok.isdigit():
+                continue
+            valid = False
+            break
+        if valid:
+            return True
+    return False

@@ -1,7 +1,7 @@
 """
 handlers/profile_command.py
 ------------------------------
-پروفایل / /profile — ADMIN-ONLY (per your request: profile is a moderation
+پروفایل — ADMIN-ONLY (per your request: profile is a moderation
 tool showing the numeric user ID needed for other commands/logs, so it's
 gated the same as ban/mute/etc, not open to every member).
 
@@ -17,7 +17,7 @@ from telebot.types import Message
 
 from core import bot, db
 from utils.permissions import is_authorized_admin
-from utils.text import normalize_fa, normalize_trigger
+from utils.text import normalize_trigger
 
 DAY = timedelta(hours=24)
 
@@ -34,9 +34,38 @@ NOT_ADMIN_MESSAGE = (
 )
 
 
+TOP_ADDERS_LIMIT = 3
+
+
+async def _group_activity_block(chat_id: int) -> str:
+    """New-members-in-24h + top-3-adders block, appended below every profile
+    card (group-wide context, not specific to the target being profiled)."""
+    since = datetime.now(timezone.utc) - DAY
+    recent_joins = await db.get_recently_joined_members(chat_id, since=since)
+    top_adders = await db.get_top_adders(chat_id, limit=TOP_ADDERS_LIMIT)
+
+    lines = ["\n➖➖➖➖➖➖➖➖➖➖\n🆕 <b>اعضای جدید (۲۴ ساعت اخیر)</b>"]
+    if recent_joins:
+        for user_id, _joined_at in recent_joins:
+            name = await db.get_user_display_name(chat_id, user_id)
+            lines.append(f"• {name}")
+    else:
+        lines.append("در ۲۴ ساعت اخیر عضو جدیدی وارد نشده.")
+
+    lines.append("\n🏆 <b>۳ نفر برتر در افزودن عضو</b>")
+    if top_adders:
+        for user_id, count in top_adders:
+            name = await db.get_user_display_name(chat_id, user_id)
+            lines.append(f"• {name}: {count} عضو")
+    else:
+        lines.append("هنوز کسی عضوی به این گروه اضافه نکرده.")
+
+    return "\n".join(lines)
+
+
 @bot.message_handler(
     chat_types=["group", "supergroup"],
-    func=lambda m: normalize_trigger(m.text or "").strip() in {"پروفایل", "/profile"},
+    func=lambda m: normalize_trigger(m.text or "").strip() == "پروفایل",
 )
 async def show_profile(message: Message):
     if not await is_authorized_admin(db, message.chat.id, message.from_user.id):
@@ -68,6 +97,7 @@ async def show_profile(message: Message):
         f"📨 کل پیام‌ها در این گروه: {total}\n"
         f"🕓 پیام‌های ۲۴ ساعت اخیر: {last_24h}"
     )
+    caption += await _group_activity_block(message.chat.id)
 
     try:
         photos = await bot.get_user_profile_photos(target.id, limit=1)

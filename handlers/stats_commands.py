@@ -42,7 +42,7 @@ async def _format_stats(chat_id: int, since) -> str:
 
 @bot.message_handler(
     chat_types=["group", "supergroup"],
-    func=lambda m: normalize_fa(m.text or "").strip() in {"آمار روز", "/daily_stats", "امار روز"},
+    func=lambda m: normalize_fa(m.text or "").strip() in {"آمار روزانه", "امار روزانه", "آمار روز", "امار روز"},
 )
 async def daily_stats(message: Message):
     since = datetime.now(timezone.utc) - DAY
@@ -52,7 +52,7 @@ async def daily_stats(message: Message):
 
 @bot.message_handler(
     chat_types=["group", "supergroup"],
-    func=lambda m: normalize_fa(m.text or "").strip() in {"آمار کل", "/total_stats", "امار کل"},
+    func=lambda m: normalize_fa(m.text or "").strip() in {"آمار کل", "امار کل"},
 )
 async def total_stats(message: Message):
     text = await _format_stats(message.chat.id, None)

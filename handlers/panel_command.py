@@ -1,7 +1,7 @@
 """
 handlers/panel_command.py
 ----------------------------
-پنل / /panel — the inline-keyboard admin panel (main -> قفل‌ها / لیست‌ها /
+پنل — the inline-keyboard admin panel (main -> قفل‌ها / لیست‌ها /
 تنظیمات پیشرفته), replacing a growing pile of separate text commands with
 one navigable menu, the way DIGI ANTI's panel works.
 
@@ -19,9 +19,9 @@ from handlers.help_command import send_help
 from utils.locks import LOCKS, is_lock_enabled
 from utils.panel_auth import encode, verify_panel_callback
 from utils.permissions import is_authorized_admin
-from utils.text import normalize_fa, normalize_trigger
+from utils.text import normalize_trigger
 
-PANEL_TRIGGERS = {"پنل", "/panel"}
+PANEL_TRIGGERS = {"پنل"}
 
 MAIN_TEXT = "🛠 <b>پنل تنظیمات گروه</b>\n\nیک بخش را انتخاب کنید:"
 
@@ -121,20 +121,16 @@ async def _settings_text_and_keyboard(chat_id: int, invoker_id: int):
     s = await db.get_chat_settings(chat_id)
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
+        InlineKeyboardButton("خوش‌آمدگویی", callback_data=encode(invoker_id, "settings", "toggle", "welcome"),
+            style = 'success' if s['welcome_enabled'] else None),
         InlineKeyboardButton(
-            f"{'✅' if s['welcome_enabled'] else '❌'} خوش‌آمدگویی",
-            callback_data=encode(invoker_id, "settings", "toggle", "welcome"),
-        ),
-        InlineKeyboardButton(
-            f"{'✅' if s['goodbye_enabled'] else '❌'} بدرود",
-            callback_data=encode(invoker_id, "settings", "toggle", "goodbye"),
-        ),
+            "بدرود", callback_data=encode(invoker_id, "settings", "toggle", "goodbye"),
+            style = 'success' if s['goodbye_enabled'] else None),
     )
     kb.add(
         InlineKeyboardButton(
-            f"{'✅' if s['join_captcha_enabled'] else '❌'} کپچای عضویت",
-            callback_data=encode(invoker_id, "settings", "toggle", "captcha"),
-        )
+            "کپچای عضویت", callback_data=encode(invoker_id, "settings", "toggle", "captcha"),
+            style = 'success' if s['join_captcha_enabled'] else None)
     )
     kb.add(InlineKeyboardButton("⬅️ بازگشت", callback_data=encode(invoker_id, "main"), style="danger"))
     text = (
@@ -198,7 +194,7 @@ async def panel_callback(call: CallbackQuery):
         return
 
     if parts[0] == "help":
-        await send_help(chat_id)
+        await send_help(chat_id, invoker_id)
         return
 
     if parts[0] == "locks":
