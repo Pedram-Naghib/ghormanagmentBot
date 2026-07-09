@@ -28,6 +28,7 @@ from handlers import help_command  # noqa: F401
 from handlers import admin_commands  # noqa: F401
 from handlers import stats_commands  # noqa: F401
 from handlers import profile_command  # noqa: F401
+from handlers import panel_command  # noqa: F401
 from handlers import antispam  # noqa: F401  (must stay LAST)
 from handlers.tracking import StatsMiddleware
 
@@ -42,7 +43,14 @@ async def _set_command_menu():
             [
                 BotCommand("start", "معرفی ربات"),
                 BotCommand("help", "راهنمای کامل"),
-                BotCommand("profile", "پروفایل کاربر (ریپلای کنید)"),
+                BotCommand("panel", "پنل تنظیمات گروه (فقط ادمین‌ها)"),
+                BotCommand("profile", "پروفایل کاربر - آیدی و آمار (فقط ادمین‌ها، ریپلای کنید)"),
+                BotCommand("ban", "اخراج و بن کاربر (ریپلای کنید)"),
+                BotCommand("unban", "رفع بن کاربر"),
+                BotCommand("mute", "سکوت کاربر (ریپلای کنید)"),
+                BotCommand("unmute", "رفع سکوت کاربر"),
+                BotCommand("warn", "اخطار به کاربر (ریپلای کنید)"),
+                BotCommand("admins", "لیست ادمین‌های گروه"),
             ]
         )
     except Exception as e:

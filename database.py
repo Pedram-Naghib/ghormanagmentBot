@@ -142,6 +142,66 @@ class Database:
                 """
             )
 
+            # --- Welcome/goodbye columns on chat_settings (migration-safe:
+            # ADD COLUMN IF NOT EXISTS works fine on a table that already
+            # exists in production from earlier versions). ---
+            await conn.execute(
+                "ALTER TABLE chat_settings ADD COLUMN IF NOT EXISTS welcome_enabled BOOLEAN NOT NULL DEFAULT TRUE;"
+            )
+            await conn.execute(
+                "ALTER TABLE chat_settings ADD COLUMN IF NOT EXISTS welcome_text TEXT;"
+            )
+            await conn.execute(
+                "ALTER TABLE chat_settings ADD COLUMN IF NOT EXISTS goodbye_enabled BOOLEAN NOT NULL DEFAULT TRUE;"
+            )
+            await conn.execute(
+                "ALTER TABLE chat_settings ADD COLUMN IF NOT EXISTS goodbye_text TEXT;"
+            )
+
+            # --- Per-chat content-type locks (پنل -> قفل‌ها). Unknown/missing
+            # keys fall back to DEFAULT_LOCK_STATE below, so adding a brand
+            # new lock type later never requires a migration. ---
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_locks (
+                    chat_id BIGINT NOT NULL,
+                    lock_key TEXT NOT NULL,
+                    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                    PRIMARY KEY (chat_id, lock_key)
+                );
+                """
+            )
+
+            # --- Filtered words (فیلتر کلمات) ---
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS filtered_words (
+                    chat_id BIGINT NOT NULL,
+                    word TEXT NOT NULL,
+                    added_by BIGINT,
+                    added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    PRIMARY KEY (chat_id, word)
+                );
+                """
+            )
+
+            # --- Warnings (اخطار) ---
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS warnings (
+                    id BIGSERIAL PRIMARY KEY,
+                    chat_id BIGINT NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    warned_by BIGINT,
+                    reason TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+                """
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_warnings_chat_user ON warnings (chat_id, user_id);"
+            )
+
     # ---------------------------------------------------------------- #
     # USERS / PROFILE  (all scoped per chat_id, since group_users is)
     # ---------------------------------------------------------------- #
@@ -351,12 +411,54 @@ class Database:
                 "spam_message_limit": row["spam_message_limit"],
                 "spam_time_window_seconds": row["spam_time_window_seconds"],
                 "spam_mute_minutes": row["spam_mute_minutes"],
+                "welcome_enabled": row["welcome_enabled"],
+                "welcome_text": row["welcome_text"],
+                "goodbye_enabled": row["goodbye_enabled"],
+                "goodbye_text": row["goodbye_text"],
             }
         return {
             "spam_message_limit": DEFAULT_SPAM_MESSAGE_LIMIT,
             "spam_time_window_seconds": DEFAULT_SPAM_TIME_WINDOW_SECONDS,
             "spam_mute_minutes": DEFAULT_SPAM_MUTE_MINUTES,
+            "welcome_enabled": True,
+            "welcome_text": None,
+            "goodbye_enabled": True,
+            "goodbye_text": None,
         }
+
+    async def _ensure_chat_settings_row(self, conn, chat_id: int):
+        await conn.execute(
+            "INSERT INTO chat_settings (chat_id) VALUES ($1) ON CONFLICT (chat_id) DO NOTHING", chat_id
+        )
+
+    async def set_welcome_settings(
+        self, chat_id: int, *, enabled: Optional[bool] = None, text: Optional[str] = None
+    ):
+        """Update only the fields that were actually passed in (None = leave unchanged)."""
+        async with self.pool.acquire() as conn:
+            await self._ensure_chat_settings_row(conn, chat_id)
+            if enabled is not None:
+                await conn.execute(
+                    "UPDATE chat_settings SET welcome_enabled=$2 WHERE chat_id=$1", chat_id, enabled
+                )
+            if text is not None:
+                await conn.execute(
+                    "UPDATE chat_settings SET welcome_text=$2 WHERE chat_id=$1", chat_id, text
+                )
+
+    async def set_goodbye_settings(
+        self, chat_id: int, *, enabled: Optional[bool] = None, text: Optional[str] = None
+    ):
+        async with self.pool.acquire() as conn:
+            await self._ensure_chat_settings_row(conn, chat_id)
+            if enabled is not None:
+                await conn.execute(
+                    "UPDATE chat_settings SET goodbye_enabled=$2 WHERE chat_id=$1", chat_id, enabled
+                )
+            if text is not None:
+                await conn.execute(
+                    "UPDATE chat_settings SET goodbye_text=$2 WHERE chat_id=$1", chat_id, text
+                )
 
     async def set_chat_settings(
         self, chat_id: int, spam_message_limit: int, spam_time_window_seconds: int, spam_mute_minutes: int
@@ -398,3 +500,98 @@ class Database:
                 """,
                 key, file_id, set_by,
             )
+
+    # ---------------------------------------------------------------- #
+    # CONTENT-TYPE LOCKS (پنل -> قفل‌ها)
+    # ---------------------------------------------------------------- #
+    # A missing row means "use the default for that key" (see
+    # utils/locks.py -> DEFAULT_LOCK_STATE), not "off" - this keeps
+    # existing groups behaving exactly as before for link/forward
+    # (which were hardcoded ON pre-panel) without a data migration.
+
+    async def get_chat_locks(self, chat_id: int) -> dict:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT lock_key, enabled FROM chat_locks WHERE chat_id=$1", chat_id
+            )
+        return {r["lock_key"]: r["enabled"] for r in rows}
+
+    async def set_chat_lock(self, chat_id: int, lock_key: str, enabled: bool):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO chat_locks (chat_id, lock_key, enabled)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (chat_id, lock_key) DO UPDATE SET enabled = EXCLUDED.enabled
+                """,
+                chat_id, lock_key, enabled,
+            )
+
+    # ---------------------------------------------------------------- #
+    # FILTERED WORDS (فیلتر کلمات)
+    # ---------------------------------------------------------------- #
+
+    async def add_filtered_word(self, chat_id: int, word: str, added_by: Optional[int] = None):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO filtered_words (chat_id, word, added_by)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (chat_id, word) DO NOTHING
+                """,
+                chat_id, word, added_by,
+            )
+
+    async def remove_filtered_word(self, chat_id: int, word: str) -> bool:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM filtered_words WHERE chat_id=$1 AND word=$2", chat_id, word
+            )
+        return result.endswith("1")
+
+    async def list_filtered_words(self, chat_id: int) -> List[str]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT word FROM filtered_words WHERE chat_id=$1 ORDER BY added_at", chat_id
+            )
+        return [r["word"] for r in rows]
+
+    # ---------------------------------------------------------------- #
+    # WARNINGS (اخطار)
+    # ---------------------------------------------------------------- #
+
+    async def add_warning(self, chat_id: int, user_id: int, warned_by: int, reason: Optional[str] = None) -> int:
+        """Inserts a warning and returns the user's new total warning count in this chat."""
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "INSERT INTO warnings (chat_id, user_id, warned_by, reason) VALUES ($1, $2, $3, $4)",
+                    chat_id, user_id, warned_by, reason,
+                )
+                count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM warnings WHERE chat_id=$1 AND user_id=$2", chat_id, user_id
+                )
+        return count
+
+    async def clear_warnings(self, chat_id: int, user_id: int):
+        async with self.pool.acquire() as conn:
+            await conn.execute("DELETE FROM warnings WHERE chat_id=$1 AND user_id=$2", chat_id, user_id)
+
+    async def count_warnings(self, chat_id: int, user_id: int) -> int:
+        async with self.pool.acquire() as conn:
+            value = await conn.fetchval(
+                "SELECT COUNT(*) FROM warnings WHERE chat_id=$1 AND user_id=$2", chat_id, user_id
+            )
+        return value or 0
+
+    async def list_warned_users(self, chat_id: int) -> List[Tuple[int, int]]:
+        """Returns [(user_id, warning_count), ...] for every user with >=1 warning, worst first."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT user_id, COUNT(*) AS c FROM warnings
+                WHERE chat_id=$1 GROUP BY user_id ORDER BY c DESC
+                """,
+                chat_id,
+            )
+        return [(r["user_id"], r["c"]) for r in rows]

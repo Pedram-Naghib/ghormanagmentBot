@@ -13,7 +13,6 @@ in the order they were registered and stops at the first match, so this
 catch-all has to come after every specific command handler.
 """
 
-import re
 import time
 from collections import defaultdict, deque
 from typing import Deque, Dict
@@ -21,12 +20,9 @@ from typing import Deque, Dict
 from telebot.types import ChatPermissions, Message
 
 from core import bot, db
+from utils.locks import LOCKS, is_lock_enabled
 from utils.permissions import is_normal_member
-
-URL_REGEX = re.compile(
-    r"((https?://|www\.)\S+|\b[a-zA-Z0-9-]+\.(com|ir|net|org|io|me|co|info|xyz|link)\b)",
-    re.IGNORECASE,
-)
+from utils.text import normalize_fa
 
 # In-memory recent-message timestamps, per chat, per user.
 # Kept in memory (not the DB) on purpose: this is ephemeral, high-frequency
@@ -34,31 +30,39 @@ URL_REGEX = re.compile(
 _recent_messages: Dict[int, Dict[int, Deque[float]]] = defaultdict(lambda: defaultdict(deque))
 
 
-def _message_has_link(message: Message) -> bool:
-    entities = list(message.entities or []) + list(getattr(message, "caption_entities", None) or [])
-    for entity in entities:
-        if entity.type in ("url", "text_link"):
+async def _check_locks(message: Message) -> bool:
+    """
+    Rule 1: delete messages tripping any content-type lock that's ON for
+    this chat (پنل -> قفل‌ها). See utils/locks.py for the list and for how
+    an unconfigured chat falls back to the pre-panel defaults (link+forward).
+    """
+    locks_row = await db.get_chat_locks(message.chat.id)
+    for lock in LOCKS:
+        if is_lock_enabled(locks_row, lock.key) and lock.detector(message):
+            try:
+                await bot.delete_message(message.chat.id, message.message_id)
+            except Exception:
+                pass
             return True
-    text = message.text or message.caption or ""
-    return bool(URL_REGEX.search(text))
+    return False
 
 
-def _message_is_forwarded(message: Message) -> bool:
-    return bool(
-        getattr(message, "forward_from", None)
-        or getattr(message, "forward_from_chat", None)
-        or getattr(message, "forward_origin", None)
-    )
-
-
-async def _check_link_or_forward(message: Message) -> bool:
-    """Rule 1: delete messages containing links or forwarded content."""
-    if _message_has_link(message) or _message_is_forwarded(message):
-        try:
-            await bot.delete_message(message.chat.id, message.message_id)
-        except Exception:
-            pass
-        return True
+async def _check_filtered_words(message: Message) -> bool:
+    """Rule 2: delete messages containing any admin-defined filtered word."""
+    text = normalize_fa(message.text or message.caption or "")
+    if not text:
+        return False
+    words = await db.list_filtered_words(message.chat.id)
+    if not words:
+        return False
+    lowered = text.lower()
+    for word in words:
+        if normalize_fa(word).lower() in lowered:
+            try:
+                await bot.delete_message(message.chat.id, message.message_id)
+            except Exception:
+                pass
+            return True
     return False
 
 
@@ -101,22 +105,23 @@ async def _check_spam_rate(message: Message) -> bool:
 
 async def apply_normal_member_restrictions(message: Message) -> bool:
     """Centralized entry point for ALL restrictions applied to Normal members."""
-    if await _check_link_or_forward(message):
+    if await _check_locks(message):
+        return True
+
+    if await _check_filtered_words(message):
         return True
 
     if await _check_spam_rate(message):
         return True
 
-    # <-- Add future restrictions here, e.g.:
-    # if await _check_banned_words(message):
-    #     return True
+    # <-- Add future restrictions here.
 
     return False
 
 
 CATCH_ALL_CONTENT_TYPES = [
     "text", "photo", "video", "document", "audio",
-    "voice", "sticker", "animation", "video_note", "contact",
+    "voice", "sticker", "animation", "video_note", "contact", "poll",
 ]
 
 

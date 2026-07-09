@@ -1,12 +1,14 @@
 """
 handlers/profile_command.py
 ------------------------------
-پروفایل / /profile
+پروفایل / /profile — ADMIN-ONLY (per your request: profile is a moderation
+tool showing the numeric user ID needed for other commands/logs, so it's
+gated the same as ban/mute/etc, not open to every member).
 
-Reply to someone's message with this word to see their name, profile
-picture (if available), their role in THIS group, total messages in this
-group, and messages in the last 24 hours. Used without a reply, shows your
-own profile.
+Reply to someone's message with this word to see their name, numeric ID,
+profile picture (if available), their role in THIS group, total messages
+in this group, and messages in the last 24 hours. Used without a reply,
+shows your own profile.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -14,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from telebot.types import Message
 
 from core import bot, db
+from utils.permissions import is_authorized_admin
 from utils.text import normalize_fa
 
 DAY = timedelta(hours=24)
@@ -25,12 +28,21 @@ ROLE_LABELS = {
     "normal": "👤 عادی",
 }
 
+NOT_ADMIN_MESSAGE = (
+    "⛔️ دستور «پروفایل» فقط برای <b>ادمین‌های ربات در این گروه</b> در دسترس است "
+    "(چون شامل آیدی عددی کاربر می‌شود)."
+)
+
 
 @bot.message_handler(
     chat_types=["group", "supergroup"],
     func=lambda m: normalize_fa(m.text or "").strip() in {"پروفایل", "/profile"},
 )
 async def show_profile(message: Message):
+    if not await is_authorized_admin(db, message.chat.id, message.from_user.id):
+        await bot.reply_to(message, NOT_ADMIN_MESSAGE)
+        return
+
     target = (
         message.reply_to_message.from_user
         if message.reply_to_message and message.reply_to_message.from_user
@@ -50,6 +62,7 @@ async def show_profile(message: Message):
     caption = (
         f"👤 <b>پروفایل کاربر</b>\n\n"
         f"نام: {full_name}\n"
+        f"آیدی عددی: <code>{target.id}</code>\n"
         f"{username_line}"
         f"سطح دسترسی در این گروه: {role_label}\n"
         f"📨 کل پیام‌ها در این گروه: {total}\n"

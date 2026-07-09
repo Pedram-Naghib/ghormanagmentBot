@@ -38,26 +38,54 @@ from utils.permissions import (
     is_global_owner,
     is_group_admin,
 )
+from utils.telegram_errors import bot_permission_error_reply
 from utils.text import normalize_fa
 
 # --- Trigger words (all already correct Persian - see utils/text.py) ---
-BAN_TRIGGERS = {"کیک", "بن", "اخراج"}
-MUTE_TRIGGERS = {"میوت", "سکوت"}
-UNMUTE_TRIGGERS = {"آنمیوت", "رفع سکوت", "رفع میوت"}
+# Every command is reachable BOTH as a "/" command AND as one or more plain
+# Persian text synonyms - both forms are just added to the same trigger
+# set/prefix, so no separate registration is needed for the "/" form.
+BAN_TRIGGERS = {"کیک", "بن", "اخراج", "سیک", "/ban", "/kick"}
+MUTE_TRIGGERS = {"میوت", "سکوت", "/mute"}
+UNMUTE_TRIGGERS = {"آنمیوت", "رفع سکوت", "رفع میوت", "/unmute"}
 UNBAN_PREFIXES = ("رفع بن", "آنبن", "/unban")
-VIP_TRIGGERS = {"تنظیم ویژه"}
-UNVIP_TRIGGERS = {"لغو ویژه"}
-ADD_ADMIN_TRIGGERS = {"افزودن ادمین گروه", "افزودن ادمین"}
-REMOVE_ADMIN_TRIGGERS = {"حذف ادمین گروه", "حذف ادمین"}
-LIST_ADMIN_TRIGGERS = {"لیست ادمین های گروه", "لیست ادمین ها"}
-SHOW_OWNER_TRIGGERS = {"مالک این گروه", "مالک گروه"}
-CLAIM_OWNER_TRIGGERS = {"ادعای مالکیت"}
+VIP_TRIGGERS = {"تنظیم ویژه", "/vip"}
+UNVIP_TRIGGERS = {"لغو ویژه", "/unvip"}
+ADD_ADMIN_TRIGGERS = {"افزودن ادمین گروه", "افزودن ادمین", "/addadmin"}
+REMOVE_ADMIN_TRIGGERS = {"حذف ادمین گروه", "حذف ادمین", "/removeadmin"}
+LIST_ADMIN_TRIGGERS = {"لیست ادمین های گروه", "لیست ادمین ها", "/admins"}
+SHOW_OWNER_TRIGGERS = {"مالک این گروه", "مالک گروه", "/owner"}
+CLAIM_OWNER_TRIGGERS = {"ادعای مالکیت", "/claimowner"}
 SET_OWNER_PREFIX = "تنظیم مالک"
-SPAM_SETTINGS_PREFIX = "تنظیم اسپم"
-SHOW_SPAM_SETTINGS_TRIGGERS = {"تنظیمات اسپم"}
+SPAM_SETTINGS_PREFIXES = ("تنظیم اسپم", "/spamsettings")
+SHOW_SPAM_SETTINGS_TRIGGERS = {"تنظیمات اسپم", "/spamstatus"}
 SET_IMAGE_PREFIX = "ثبت تصویر"
 
+WARN_TRIGGERS = {"اخطار", "/warn"}
+CLEAR_WARN_TRIGGERS = {"حذف اخطار", "پاک کردن اخطار", "/clearwarn"}
+LIST_WARN_TRIGGERS = {"لیست اخطار", "لیست اخطارها", "/warnlist"}
+WARN_LIMIT = 3  # auto-ban after this many active warnings
+
+ADD_FILTER_PREFIX = "افزودن کلمه فیلتر"
+REMOVE_FILTER_PREFIX = "حذف کلمه فیلتر"
+LIST_FILTER_TRIGGERS = {"لیست کلمات فیلتر", "/filterlist"}
+
+SET_WELCOME_PREFIX = "تنظیم خوش آمدگویی"
+WELCOME_ON_TRIGGERS = {"روشن کردن خوش آمدگویی", "/welcomeon"}
+WELCOME_OFF_TRIGGERS = {"خاموش کردن خوش آمدگویی", "/welcomeoff"}
+SET_GOODBYE_PREFIX = "تنظیم بدرود"
+GOODBYE_ON_TRIGGERS = {"روشن کردن بدرود", "/goodbyeon"}
+GOODBYE_OFF_TRIGGERS = {"خاموش کردن بدرود", "/goodbyeoff"}
+
 DEFAULT_MUTE_SECONDS = 24 * 60 * 60  # fallback only - see mute_user for the real default (forever)
+
+NOT_ADMIN_MESSAGE = (
+    "⛔️ این دستور فقط برای <b>ادمین‌های ربات در این گروه</b> قابل استفاده است "
+    "(مالک گروه، ادمین گروه، یا مالک ربات).\n"
+    "توجه: ادمین بودن در خودِ تلگرام کافی نیست - باید توسط مالک گروه با «افزودن ادمین گروه» "
+    "به ربات معرفی شده باشید."
+)
+NOT_GLOBAL_OWNER_MESSAGE = "⛔️ این دستور فقط مخصوص مالک ربات است و برای شما در دسترس نیست."
 
 
 def _norm(message: Message) -> str:
@@ -65,11 +93,26 @@ def _norm(message: Message) -> str:
 
 
 async def _require_admin(message: Message) -> bool:
-    return await is_authorized_admin(db, message.chat.id, message.from_user.id)
+    """
+    True if the sender may use management commands here. If not, ALWAYS
+    explains why instead of staying silent (this used to just `return`
+    with no feedback, which looked like the bot was broken/unresponsive).
+    """
+    if await is_authorized_admin(db, message.chat.id, message.from_user.id):
+        return True
+    await bot.reply_to(message, NOT_ADMIN_MESSAGE)
+    return False
 
 
 async def _require_role_manager(message: Message) -> bool:
     return await can_manage_chat_roles(db, message.chat.id, message.from_user.id)
+
+
+async def _require_global_owner(message: Message) -> bool:
+    if is_global_owner(message.from_user.id):
+        return True
+    await bot.reply_to(message, NOT_GLOBAL_OWNER_MESSAGE)
+    return False
 
 
 # ---------------------------------------------------------------- #
@@ -190,11 +233,7 @@ async def ban_user(message: Message):
             f"او نمی‌تواند با لینک دعوت دوباره وارد شود، مگر با دستور «رفع بن».",
         )
     except Exception as e:
-        text = str(e)
-        if "can't remove chat owner" in text or "CHAT_ADMIN_REQUIRED" in text:
-            await bot.reply_to(message, "❌ نمی‌توان این کاربر را بن کرد؛ او مالک یا ادمین واقعی این گروه در تلگرام است.")
-        else:
-            await bot.reply_to(message, f"❌ خطا: {e}")
+        await bot.reply_to(message, bot_permission_error_reply(e))
 
 
 # ---------------------------------------------------------------- #
@@ -235,7 +274,7 @@ async def unban_user(message: Message):
         await bot.unban_chat_member(message.chat.id, target_id, only_if_banned=True)
         await bot.reply_to(message, f"✅ کاربر {target_label} از بن خارج شد و می‌تواند دوباره وارد گروه شود.")
     except Exception as e:
-        await bot.reply_to(message, f"❌ خطا: {e}")
+        await bot.reply_to(message, bot_permission_error_reply(e))
 
 
 # ---------------------------------------------------------------- #
@@ -284,7 +323,7 @@ async def mute_user(message: Message):
                 f"آزاد نشود، همینطور می‌ماند.",
             )
     except Exception as e:
-        await bot.reply_to(message, f"❌ خطا: {e}")
+        await bot.reply_to(message, bot_permission_error_reply(e))
 
 
 @bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_fa(m.text or "").strip() in UNMUTE_TRIGGERS)
@@ -303,7 +342,7 @@ async def unmute_user(message: Message):
         await bot.restrict_chat_member(message.chat.id, target.id, permissions=permissions)
         await bot.reply_to(message, f"🔊 سکوت کاربر {target.full_name} برداشته شد.")
     except Exception as e:
-        await bot.reply_to(message, f"❌ خطا: {e}")
+        await bot.reply_to(message, bot_permission_error_reply(e))
 
 
 # ---------------------------------------------------------------- #
@@ -380,7 +419,7 @@ async def claim_owner(message: Message):
     func=lambda m: normalize_fa(m.text or "").strip().startswith(SET_OWNER_PREFIX),
 )
 async def force_set_owner(message: Message):
-    if not is_global_owner(message.from_user.id):
+    if not await _require_global_owner(message):
         return
     target = await _resolve_target(message)
     if not target:
@@ -458,13 +497,14 @@ async def list_admins(message: Message):
 
 @bot.message_handler(
     chat_types=["group", "supergroup"],
-    func=lambda m: normalize_fa(m.text or "").strip().startswith(SPAM_SETTINGS_PREFIX),
+    func=lambda m: normalize_fa(m.text or "").strip().startswith(SPAM_SETTINGS_PREFIXES),
 )
 async def set_spam_settings(message: Message):
     if not await _require_admin(message):
         return
 
-    args = _norm(message).split()[2:]  # skip "تنظیم" "اسپم"
+    is_slash = _norm(message).startswith("/spamsettings")
+    args = _norm(message).split()[1:] if is_slash else _norm(message).split()[2:]  # skip "تنظیم" "اسپم"
     if len(args) != 3 or not all(a.isdigit() for a in args):
         current = await db.get_chat_settings(message.chat.id)
         await bot.reply_to(
@@ -511,7 +551,7 @@ async def show_spam_settings(message: Message):
 
 @bot.message_handler(func=lambda m: normalize_fa(m.text or "").strip().startswith(SET_IMAGE_PREFIX))
 async def set_image(message: Message):
-    if not is_global_owner(message.from_user.id):
+    if not await _require_global_owner(message):
         return
     parts = _norm(message).split()
     if len(parts) < 3 or not message.reply_to_message or not message.reply_to_message.photo:
@@ -525,3 +565,204 @@ async def set_image(message: Message):
     file_id = message.reply_to_message.photo[-1].file_id
     await db.set_asset(key, file_id, set_by=message.from_user.id)
     await bot.reply_to(message, f"✅ تصویر با کلید <code>{key}</code> ذخیره شد.")
+
+
+# ---------------------------------------------------------------- #
+# WARNINGS (اخطار) — reply to warn; WARN_LIMIT active warnings = auto-ban
+# ---------------------------------------------------------------- #
+
+def _extract_reason(message: Message, triggers) -> str:
+    text = _norm(message)
+    for trig in sorted(triggers, key=len, reverse=True):
+        if text == trig:
+            return None
+        if text.startswith(trig + " "):
+            return text[len(trig):].strip() or None
+    return None
+
+
+@bot.message_handler(
+    chat_types=["group", "supergroup"],
+    func=lambda m: (t := normalize_fa(m.text or "").strip())
+    and (t in WARN_TRIGGERS or any(t.startswith(trig + " ") for trig in WARN_TRIGGERS)),
+)
+async def warn_user(message: Message):
+    if not await _require_admin(message):
+        return
+    target = await _resolve_target(message)
+    if not target:
+        await bot.reply_to(
+            message,
+            "⚠️ برای اخطار دادن به کاربر، روی پیام او ریپلای کنید یا بنویسید: <code>اخطار @username</code>",
+        )
+        return
+    if await _refuse_if_protected(message, target):
+        return
+
+    reason = _extract_reason(message, WARN_TRIGGERS)
+    count = await db.add_warning(message.chat.id, target.id, message.from_user.id, reason)
+    reason_line = f"\nدلیل: {reason}" if reason else ""
+
+    if count >= WARN_LIMIT:
+        try:
+            await bot.ban_chat_member(message.chat.id, target.id)
+            await db.clear_warnings(message.chat.id, target.id)
+            await bot.reply_to(
+                message,
+                f"⚠️ کاربر {target.full_name} اخطار {count} از {WARN_LIMIT} را دریافت کرد و به همین دلیل "
+                f"به‌طور خودکار از گروه اخراج و بن شد.{reason_line}",
+            )
+        except Exception as e:
+            await bot.reply_to(message, bot_permission_error_reply(e))
+    else:
+        await bot.reply_to(
+            message, f"⚠️ کاربر {target.full_name} اخطار گرفت ({count} از {WARN_LIMIT}).{reason_line}"
+        )
+
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_fa(m.text or "").strip() in CLEAR_WARN_TRIGGERS)
+async def clear_warn(message: Message):
+    if not await _require_admin(message):
+        return
+    target = await _resolve_target(message)
+    if not target:
+        await bot.reply_to(message, "⚠️ روی پیام کاربر مورد نظر ریپلای کنید.")
+        return
+    await db.clear_warnings(message.chat.id, target.id)
+    await bot.reply_to(message, f"✅ اخطارهای {target.full_name} پاک شد.")
+
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_fa(m.text or "").strip() in LIST_WARN_TRIGGERS)
+async def list_warn(message: Message):
+    if not await _require_admin(message):
+        return
+    warned = await db.list_warned_users(message.chat.id)
+    if not warned:
+        await bot.reply_to(message, "هیچ کاربری در این گروه اخطار فعالی ندارد.")
+        return
+    lines = ["⚠️ <b>لیست اخطارهای این گروه:</b>"]
+    for user_id, count in warned:
+        name = await db.get_user_display_name(message.chat.id, user_id)
+        lines.append(f"• {name}: {count} از {WARN_LIMIT}")
+    await bot.reply_to(message, "\n".join(lines))
+
+
+# ---------------------------------------------------------------- #
+# FILTERED WORDS (فیلتر کلمات) — auto-delete for Normal members,
+# enforced in handlers/antispam.py
+# ---------------------------------------------------------------- #
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_fa(m.text or "").strip().startswith(ADD_FILTER_PREFIX))
+async def add_filter_word(message: Message):
+    if not await _require_admin(message):
+        return
+    word = _norm(message)[len(ADD_FILTER_PREFIX):].strip()
+    if not word:
+        await bot.reply_to(message, "⚠️ فرمت درست: <code>افزودن کلمه فیلتر [کلمه]</code>")
+        return
+    await db.add_filtered_word(message.chat.id, word, added_by=message.from_user.id)
+    await bot.reply_to(message, f"✅ کلمهٔ «{word}» به فیلتر این گروه اضافه شد و پیام‌های حاوی آن حذف می‌شوند.")
+
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_fa(m.text or "").strip().startswith(REMOVE_FILTER_PREFIX))
+async def remove_filter_word(message: Message):
+    if not await _require_admin(message):
+        return
+    word = _norm(message)[len(REMOVE_FILTER_PREFIX):].strip()
+    if not word:
+        await bot.reply_to(message, "⚠️ فرمت درست: <code>حذف کلمه فیلتر [کلمه]</code>")
+        return
+    removed = await db.remove_filtered_word(message.chat.id, word)
+    if removed:
+        await bot.reply_to(message, f"✅ کلمهٔ «{word}» از فیلتر این گروه حذف شد.")
+    else:
+        await bot.reply_to(message, f"«{word}» در لیست کلمات فیلتر این گروه نبود.")
+
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_fa(m.text or "").strip() in LIST_FILTER_TRIGGERS)
+async def list_filter_words(message: Message):
+    if not await _require_admin(message):
+        return
+    words = await db.list_filtered_words(message.chat.id)
+    if not words:
+        await bot.reply_to(message, "هیچ کلمه‌ای در فیلتر این گروه ثبت نشده.")
+        return
+    await bot.reply_to(message, "🔒 <b>کلمات فیلتر این گروه:</b>\n" + "\n".join(f"• {w}" for w in words))
+
+
+# ---------------------------------------------------------------- #
+# WELCOME / GOODBYE — customizable, per-chat, default ON
+# ---------------------------------------------------------------- #
+# Placeholders available in the text: {name} (first+last name),
+# {mention} (clickable HTML mention), {group} (group title).
+
+WELCOME_TEXT_HELP = (
+    "⚠️ فرمت درست: <code>تنظیم خوش آمدگویی [متن]</code>\n"
+    "می‌توانید از جای‌گذاری‌های زیر استفاده کنید:\n"
+    "• <code>{name}</code> → نام عضو جدید\n"
+    "• <code>{mention}</code> → منشن قابل کلیک عضو جدید\n"
+    "• <code>{group}</code> → نام گروه"
+)
+GOODBYE_TEXT_HELP = (
+    "⚠️ فرمت درست: <code>تنظیم بدرود [متن]</code>\n"
+    "می‌توانید از جای‌گذاری‌های زیر استفاده کنید:\n"
+    "• <code>{name}</code> → نام عضوی که رفت\n"
+    "• <code>{mention}</code> → منشن قابل کلیک او\n"
+    "• <code>{group}</code> → نام گروه"
+)
+
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_fa(m.text or "").strip().startswith(SET_WELCOME_PREFIX))
+async def set_welcome_text(message: Message):
+    if not await _require_admin(message):
+        return
+    text = _norm(message)[len(SET_WELCOME_PREFIX):].strip()
+    if not text:
+        await bot.reply_to(message, WELCOME_TEXT_HELP)
+        return
+    await db.set_welcome_settings(message.chat.id, text=text)
+    await bot.reply_to(message, "✅ متن خوش‌آمدگویی این گروه به‌روزرسانی شد.")
+
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_fa(m.text or "").strip() in WELCOME_ON_TRIGGERS)
+async def welcome_on(message: Message):
+    if not await _require_admin(message):
+        return
+    await db.set_welcome_settings(message.chat.id, enabled=True)
+    await bot.reply_to(message, "✅ خوش‌آمدگویی برای اعضای جدید این گروه فعال شد.")
+
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_fa(m.text or "").strip() in WELCOME_OFF_TRIGGERS)
+async def welcome_off(message: Message):
+    if not await _require_admin(message):
+        return
+    await db.set_welcome_settings(message.chat.id, enabled=False)
+    await bot.reply_to(message, "✅ خوش‌آمدگویی برای اعضای جدید این گروه غیرفعال شد.")
+
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_fa(m.text or "").strip().startswith(SET_GOODBYE_PREFIX))
+async def set_goodbye_text(message: Message):
+    if not await _require_admin(message):
+        return
+    text = _norm(message)[len(SET_GOODBYE_PREFIX):].strip()
+    if not text:
+        await bot.reply_to(message, GOODBYE_TEXT_HELP)
+        return
+    await db.set_goodbye_settings(message.chat.id, text=text)
+    await bot.reply_to(message, "✅ متن بدرود این گروه به‌روزرسانی شد.")
+
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_fa(m.text or "").strip() in GOODBYE_ON_TRIGGERS)
+async def goodbye_on(message: Message):
+    if not await _require_admin(message):
+        return
+    await db.set_goodbye_settings(message.chat.id, enabled=True)
+    await bot.reply_to(message, "✅ بدرود برای اعضایی که گروه را ترک می‌کنند فعال شد.")
+
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_fa(m.text or "").strip() in GOODBYE_OFF_TRIGGERS)
+async def goodbye_off(message: Message):
+    if not await _require_admin(message):
+        return
+    await db.set_goodbye_settings(message.chat.id, enabled=False)
+    await bot.reply_to(message, "✅ بدرود برای اعضایی که گروه را ترک می‌کنند غیرفعال شد.")
