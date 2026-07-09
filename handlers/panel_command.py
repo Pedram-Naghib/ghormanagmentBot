@@ -19,7 +19,7 @@ from handlers.help_command import send_help
 from utils.locks import LOCKS, is_lock_enabled
 from utils.panel_auth import encode, verify_panel_callback
 from utils.permissions import is_authorized_admin
-from utils.text import normalize_fa
+from utils.text import normalize_fa, normalize_trigger
 
 PANEL_TRIGGERS = {"پنل", "/panel"}
 
@@ -34,7 +34,7 @@ def _main_keyboard(invoker_id: int) -> InlineKeyboardMarkup:
     )
     kb.add(InlineKeyboardButton("⚙️ تنظیمات پیشرفته", callback_data=encode(invoker_id, "settings")))
     kb.add(InlineKeyboardButton("📖 راهنما", callback_data=encode(invoker_id, "help")))
-    kb.add(InlineKeyboardButton("❌ بستن", callback_data=encode(invoker_id, "close")))
+    kb.add(InlineKeyboardButton("❌ بستن", callback_data=encode(invoker_id, "close"), style="danger"))
     return kb
 
 
@@ -44,14 +44,14 @@ async def _locks_text_and_keyboard(chat_id: int, invoker_id: int):
     buttons = []
     for lock in LOCKS:
         enabled = is_lock_enabled(locks_row, lock.key)
-        mark = "✅" if enabled else "❌"
+        style = "success" if enabled else None
         buttons.append(
             InlineKeyboardButton(
-                f"{mark} {lock.label}", callback_data=encode(invoker_id, "locks", "toggle", lock.key)
+                f"{lock.label}", callback_data=encode(invoker_id, "locks", "toggle", lock.key), style=style
             )
         )
     kb.add(*buttons)
-    kb.add(InlineKeyboardButton("⬅️ بازگشت", callback_data=encode(invoker_id, "main")))
+    kb.add(InlineKeyboardButton("⬅️ بازگشت", callback_data=encode(invoker_id, "main"), style="danger"))
     text = "🔒 <b>قفل‌ها</b>\n\nروی هرکدام بزنید تا روشن/خاموش شود (فقط برای اعضای عادی اعمال می‌شود):"
     return text, kb
 
@@ -66,7 +66,7 @@ def _lists_menu_keyboard(invoker_id: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton("🔒 کلمات فیلتر", callback_data=encode(invoker_id, "lists", "filters")),
         InlineKeyboardButton("⚠️ اخطارها", callback_data=encode(invoker_id, "lists", "warnings")),
     )
-    kb.add(InlineKeyboardButton("⬅️ بازگشت", callback_data=encode(invoker_id, "main")))
+    kb.add(InlineKeyboardButton("⬅️ بازگشت", callback_data=encode(invoker_id, "main"), style="danger"))
     return kb
 
 
@@ -130,14 +130,24 @@ async def _settings_text_and_keyboard(chat_id: int, invoker_id: int):
             callback_data=encode(invoker_id, "settings", "toggle", "goodbye"),
         ),
     )
-    kb.add(InlineKeyboardButton("⬅️ بازگشت", callback_data=encode(invoker_id, "main")))
+    kb.add(
+        InlineKeyboardButton(
+            f"{'✅' if s['join_captcha_enabled'] else '❌'} کپچای عضویت",
+            callback_data=encode(invoker_id, "settings", "toggle", "captcha"),
+        )
+    )
+    kb.add(InlineKeyboardButton("⬅️ بازگشت", callback_data=encode(invoker_id, "main"), style="danger"))
     text = (
         "⚙️ <b>تنظیمات پیشرفته</b>\n\n"
-        f"حداکثر پیام مجاز (ضد اسپم): {s['spam_message_limit']} در {s['spam_time_window_seconds']} ثانیه\n"
+        f"سقف پیام مجاز (ضد اسپم): {s['spam_message_limit']} پیام در ۳ ثانیه\n"
         f"مدت سکوت خودکار: {s['spam_mute_minutes']} دقیقه\n"
-        "(برای تغییر بنویسید: «تنظیم اسپم [حداکثر پیام] [بازه] [مدت سکوت]»)\n\n"
+        "(برای تغییر بنویسید: «تنظیم تعداد پیام مجاز [عدد]» یا «تنظیم مدت سکوت اسپم [عدد]»)\n\n"
         "برای تغییر متن خوش‌آمدگویی/بدرود بنویسید:\n"
-        "«تنظیم خوش آمدگویی [متن]» یا «تنظیم بدرود [متن]»"
+        "«تنظیم خوش آمدگویی [متن]» یا «تنظیم بدرود [متن]»\n"
+        "(می‌توانید روی یک عکس/ویدیو/ویس ریپلای کرده و همین دستور را بفرستید تا آن رسانه هم پیام خوش‌آمدگویی شود)\n\n"
+        "کپچای عضویت: اگر گروه شما «تایید درخواست عضویت» فعال باشد، با روشن کردن این گزینه، ربات "
+        "برای هرکسی که درخواست عضویت می‌دهد یک سؤال ساده در پیوی می‌فرستد؛ اگر ظرف ۱ دقیقه درست جواب "
+        "ندهد، درخواستش خودکار رد می‌شود."
     )
     return text, kb
 
@@ -154,7 +164,7 @@ async def _render_main(message: Message, invoker_id: int, edit: bool):
 
 @bot.message_handler(
     chat_types=["group", "supergroup"],
-    func=lambda m: normalize_fa(m.text or "").strip() in PANEL_TRIGGERS,
+    func=lambda m: normalize_trigger(m.text or "").strip() in PANEL_TRIGGERS,
 )
 async def open_panel(message: Message):
     if not await is_authorized_admin(db, message.chat.id, message.from_user.id):
@@ -213,7 +223,7 @@ async def panel_callback(call: CallbackQuery):
             if text_fn:
                 text = await text_fn(chat_id)
                 kb = InlineKeyboardMarkup()
-                kb.add(InlineKeyboardButton("⬅️ بازگشت", callback_data=encode(invoker_id, "lists")))
+                kb.add(InlineKeyboardButton("⬅️ بازگشت", callback_data=encode(invoker_id, "lists"), style="danger"))
                 await bot.edit_message_text(text, chat_id=chat_id, message_id=msg_id, reply_markup=kb)
                 return
         await bot.edit_message_text(
@@ -230,6 +240,8 @@ async def panel_callback(call: CallbackQuery):
                 await db.set_welcome_settings(chat_id, enabled=not s["welcome_enabled"])
             elif key == "goodbye":
                 await db.set_goodbye_settings(chat_id, enabled=not s["goodbye_enabled"])
+            elif key == "captcha":
+                await db.set_join_captcha_enabled(chat_id, not s["join_captcha_enabled"])
         text, kb = await _settings_text_and_keyboard(chat_id, invoker_id)
         await bot.edit_message_text(text, chat_id=chat_id, message_id=msg_id, reply_markup=kb)
         return

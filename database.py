@@ -157,6 +157,21 @@ class Database:
             await conn.execute(
                 "ALTER TABLE chat_settings ADD COLUMN IF NOT EXISTS goodbye_text TEXT;"
             )
+            await conn.execute(
+                "ALTER TABLE chat_settings ADD COLUMN IF NOT EXISTS welcome_media_file_id TEXT;"
+            )
+            await conn.execute(
+                "ALTER TABLE chat_settings ADD COLUMN IF NOT EXISTS welcome_media_type TEXT;"
+            )
+            await conn.execute(
+                "ALTER TABLE chat_settings ADD COLUMN IF NOT EXISTS goodbye_media_file_id TEXT;"
+            )
+            await conn.execute(
+                "ALTER TABLE chat_settings ADD COLUMN IF NOT EXISTS goodbye_media_type TEXT;"
+            )
+            await conn.execute(
+                "ALTER TABLE chat_settings ADD COLUMN IF NOT EXISTS join_captcha_enabled BOOLEAN NOT NULL DEFAULT FALSE;"
+            )
 
             # --- Per-chat content-type locks (پنل -> قفل‌ها). Unknown/missing
             # keys fall back to DEFAULT_LOCK_STATE below, so adding a brand
@@ -413,8 +428,13 @@ class Database:
                 "spam_mute_minutes": row["spam_mute_minutes"],
                 "welcome_enabled": row["welcome_enabled"],
                 "welcome_text": row["welcome_text"],
+                "welcome_media_file_id": row["welcome_media_file_id"],
+                "welcome_media_type": row["welcome_media_type"],
                 "goodbye_enabled": row["goodbye_enabled"],
                 "goodbye_text": row["goodbye_text"],
+                "goodbye_media_file_id": row["goodbye_media_file_id"],
+                "goodbye_media_type": row["goodbye_media_type"],
+                "join_captcha_enabled": row["join_captcha_enabled"],
             }
         return {
             "spam_message_limit": DEFAULT_SPAM_MESSAGE_LIMIT,
@@ -422,8 +442,13 @@ class Database:
             "spam_mute_minutes": DEFAULT_SPAM_MUTE_MINUTES,
             "welcome_enabled": True,
             "welcome_text": None,
+            "welcome_media_file_id": None,
+            "welcome_media_type": None,
             "goodbye_enabled": True,
             "goodbye_text": None,
+            "goodbye_media_file_id": None,
+            "goodbye_media_type": None,
+            "join_captcha_enabled": False,
         }
 
     async def _ensure_chat_settings_row(self, conn, chat_id: int):
@@ -432,7 +457,14 @@ class Database:
         )
 
     async def set_welcome_settings(
-        self, chat_id: int, *, enabled: Optional[bool] = None, text: Optional[str] = None
+        self,
+        chat_id: int,
+        *,
+        enabled: Optional[bool] = None,
+        text: Optional[str] = None,
+        clear_media: bool = False,
+        media_file_id: Optional[str] = None,
+        media_type: Optional[str] = None,
     ):
         """Update only the fields that were actually passed in (None = leave unchanged)."""
         async with self.pool.acquire() as conn:
@@ -445,9 +477,26 @@ class Database:
                 await conn.execute(
                     "UPDATE chat_settings SET welcome_text=$2 WHERE chat_id=$1", chat_id, text
                 )
+            if clear_media:
+                await conn.execute(
+                    "UPDATE chat_settings SET welcome_media_file_id=NULL, welcome_media_type=NULL WHERE chat_id=$1",
+                    chat_id,
+                )
+            elif media_file_id is not None:
+                await conn.execute(
+                    "UPDATE chat_settings SET welcome_media_file_id=$2, welcome_media_type=$3 WHERE chat_id=$1",
+                    chat_id, media_file_id, media_type,
+                )
 
     async def set_goodbye_settings(
-        self, chat_id: int, *, enabled: Optional[bool] = None, text: Optional[str] = None
+        self,
+        chat_id: int,
+        *,
+        enabled: Optional[bool] = None,
+        text: Optional[str] = None,
+        clear_media: bool = False,
+        media_file_id: Optional[str] = None,
+        media_type: Optional[str] = None,
     ):
         async with self.pool.acquire() as conn:
             await self._ensure_chat_settings_row(conn, chat_id)
@@ -459,6 +508,37 @@ class Database:
                 await conn.execute(
                     "UPDATE chat_settings SET goodbye_text=$2 WHERE chat_id=$1", chat_id, text
                 )
+            if clear_media:
+                await conn.execute(
+                    "UPDATE chat_settings SET goodbye_media_file_id=NULL, goodbye_media_type=NULL WHERE chat_id=$1",
+                    chat_id,
+                )
+            elif media_file_id is not None:
+                await conn.execute(
+                    "UPDATE chat_settings SET goodbye_media_file_id=$2, goodbye_media_type=$3 WHERE chat_id=$1",
+                    chat_id, media_file_id, media_type,
+                )
+
+    async def set_spam_limit(self, chat_id: int, limit: int):
+        async with self.pool.acquire() as conn:
+            await self._ensure_chat_settings_row(conn, chat_id)
+            await conn.execute(
+                "UPDATE chat_settings SET spam_message_limit=$2 WHERE chat_id=$1", chat_id, limit
+            )
+
+    async def set_spam_mute_minutes(self, chat_id: int, minutes: int):
+        async with self.pool.acquire() as conn:
+            await self._ensure_chat_settings_row(conn, chat_id)
+            await conn.execute(
+                "UPDATE chat_settings SET spam_mute_minutes=$2 WHERE chat_id=$1", chat_id, minutes
+            )
+
+    async def set_join_captcha_enabled(self, chat_id: int, enabled: bool):
+        async with self.pool.acquire() as conn:
+            await self._ensure_chat_settings_row(conn, chat_id)
+            await conn.execute(
+                "UPDATE chat_settings SET join_captcha_enabled=$2 WHERE chat_id=$1", chat_id, enabled
+            )
 
     async def set_chat_settings(
         self, chat_id: int, spam_message_limit: int, spam_time_window_seconds: int, spam_mute_minutes: int

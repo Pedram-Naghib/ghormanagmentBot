@@ -17,7 +17,7 @@ from telebot.types import Message
 
 from core import bot, db
 from utils.permissions import is_authorized_admin
-from utils.text import normalize_fa
+from utils.text import normalize_fa, normalize_trigger
 
 DAY = timedelta(hours=24)
 
@@ -36,7 +36,7 @@ NOT_ADMIN_MESSAGE = (
 
 @bot.message_handler(
     chat_types=["group", "supergroup"],
-    func=lambda m: normalize_fa(m.text or "").strip() in {"پروفایل", "/profile"},
+    func=lambda m: normalize_trigger(m.text or "").strip() in {"پروفایل", "/profile"},
 )
 async def show_profile(message: Message):
     if not await is_authorized_admin(db, message.chat.id, message.from_user.id):

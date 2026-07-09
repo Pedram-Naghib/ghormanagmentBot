@@ -47,3 +47,30 @@ def normalize_fa(text: str) -> str:
         text = text.replace(ch, "")
     # Collapse repeated whitespace (some keyboards insert double spaces)
     return " ".join(text.split())
+
+
+def strip_bot_mention(text: str) -> str:
+    """
+    Telegram appends "@YourBotUsername" to a "/" command in two very common
+    cases: whenever the person TAPS it from the bot's own command menu in a
+    group (not just when there are multiple bots), and always in channels.
+    Our trigger sets/prefixes were only ever written as "/owner", "/admins",
+    etc. with no "@..." suffix, so a plain `text in TRIGGERS` or
+    `text.startswith(prefix)` check silently fails the moment Telegram adds
+    that suffix - this is almost certainly why /owner, /admins, and
+    /claimowner "did nothing": they likely arrived as
+    "/owner@YourBotUsername" and never matched.
+    """
+    if not text.startswith("/"):
+        return text
+    head, _, rest = text.partition(" ")
+    if "@" in head:
+        head = head.split("@", 1)[0]
+    return head + (" " + rest if rest else "")
+
+
+def normalize_trigger(text: str) -> str:
+    """normalize_fa() + strip_bot_mention() - use this (not normalize_fa
+    alone) for anything that compares message text against a command/
+    trigger word or prefix, whether Persian text or a "/" command."""
+    return strip_bot_mention(normalize_fa(text))

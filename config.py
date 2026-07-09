@@ -46,9 +46,12 @@ WEBAPP_HOST = os.getenv("WEBAPP_HOST", "0.0.0.0")
 WEBAPP_PORT = int(os.getenv("PORT", os.getenv("WEBAPP_PORT", 8080)))
 
 # --- Anti-spam fallback defaults ---
-# Only used for a chat that hasn't set its own thresholds yet via "تنظیم اسپم".
+# Only used for a chat that hasn't set its own thresholds yet.
+# NOTE: the time window is intentionally fixed at 3 seconds and no longer
+# admin-configurable (see handlers/admin_commands.py) - simpler for a
+# normal admin than tuning three separate numbers.
 DEFAULT_SPAM_MESSAGE_LIMIT = int(os.getenv("SPAM_MESSAGE_LIMIT", 6))
-DEFAULT_SPAM_TIME_WINDOW_SECONDS = int(os.getenv("SPAM_TIME_WINDOW_SECONDS", 8))
+DEFAULT_SPAM_TIME_WINDOW_SECONDS = int(os.getenv("SPAM_TIME_WINDOW_SECONDS", 3))
 DEFAULT_SPAM_MUTE_MINUTES = int(os.getenv("SPAM_MUTE_MINUTES", 30))
 
 # --- Stats ---

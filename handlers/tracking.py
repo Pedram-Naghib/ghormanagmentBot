@@ -17,6 +17,19 @@ Three things:
    gets role='owner' for this chat, per your role model. It also nudges
    whoever added the bot to grant it admin rights, since almost every
    moderation command (ban/mute/delete) silently fails without them.
+
+--------------------------------------------------------------------
+WELCOME/GOODBYE PLACEHOLDERS
+--------------------------------------------------------------------
+Templates use Persian placeholder names ({نام}, {گروه}, {منشن}) rather than
+English ({name}/{group}/{mention}) so a non-English-speaking admin can read
+their own custom template and immediately understand what each part means.
+These are shown to the ADMIN only, in the help text and in the "فرمت
+درست" hint when they run «تنظیم خوش آمدگویی» with no text - they are NOT
+sent literally to anyone. The admin writes a template once (e.g. "خوش
+اومدی {منشن} به گروه {گروه}"), and _render_template() below fills those
+placeholders in with the real new member's name/mention and the real
+group's title every time someone actually joins or leaves.
 """
 
 from telebot.asyncio_handler_backends import BaseMiddleware
@@ -26,8 +39,23 @@ from core import bot, db
 
 IN_CHAT_STATUSES = {"member", "administrator", "restricted"}
 
-DEFAULT_WELCOME_TEXT = "👋 {mention} به {group} خوش اومدی!"
-DEFAULT_GOODBYE_TEXT = "😢 {name} از {group} رفت. بدرود!"
+# {گروه} is spelled out explicitly ("به گروه X" = "to the group X") rather
+# than just "{منشن} به {گروه}" so it's unambiguous which part is the
+# person's name/mention and which part is the group's name.
+DEFAULT_WELCOME_TEXT = "👋 {منشن} به گروه {گروه} خوش اومدی!"
+DEFAULT_GOODBYE_TEXT = "😢 {نام} از گروه {گروه} رفت. بدرود!"
+
+# Maps a Telegram content_type to the AsyncTeleBot method that (re)sends a
+# file already living on Telegram's servers via its file_id - no re-upload.
+MEDIA_SEND_METHODS = {
+    "photo": "send_photo",
+    "video": "send_video",
+    "voice": "send_voice",
+    "audio": "send_audio",
+    "animation": "send_animation",
+    "document": "send_document",
+    "video_note": "send_video_note",
+}
 
 
 def _member_name(user) -> str:
@@ -40,7 +68,24 @@ def _member_mention(user) -> str:
 
 
 def _render_template(template: str, *, user, group_title: str) -> str:
-    return template.format(name=_member_name(user), mention=_member_mention(user), group=group_title)
+    mapping = {"نام": _member_name(user), "منشن": _member_mention(user), "گروه": group_title}
+    return template.format_map(mapping)
+
+
+async def _send_templated(chat_id: int, template: str, media_file_id, media_type, *, user, group_title: str):
+    try:
+        text = _render_template(template, user=user, group_title=group_title)
+    except Exception:
+        text = template  # malformed placeholder in a custom template - send it verbatim rather than crash
+
+    try:
+        if media_file_id and media_type in MEDIA_SEND_METHODS:
+            send_method = getattr(bot, MEDIA_SEND_METHODS[media_type])
+            await send_method(chat_id, media_file_id, caption=text)
+        else:
+            await bot.send_message(chat_id, text)
+    except Exception:
+        pass
 
 
 async def _send_welcome(message: Message):
@@ -51,14 +96,11 @@ async def _send_welcome(message: Message):
     for new_member in message.new_chat_members:
         if new_member.is_bot:
             continue
-        try:
-            text = _render_template(template, user=new_member, group_title=message.chat.title or "")
-        except Exception:
-            text = _render_template(DEFAULT_WELCOME_TEXT, user=new_member, group_title=message.chat.title or "")
-        try:
-            await bot.send_message(message.chat.id, text)
-        except Exception:
-            pass
+        await _send_templated(
+            message.chat.id, template,
+            settings["welcome_media_file_id"], settings["welcome_media_type"],
+            user=new_member, group_title=message.chat.title or "",
+        )
 
 
 async def _send_goodbye(message: Message):
@@ -69,14 +111,11 @@ async def _send_goodbye(message: Message):
     if not settings["goodbye_enabled"]:
         return
     template = settings["goodbye_text"] or DEFAULT_GOODBYE_TEXT
-    try:
-        text = _render_template(template, user=left_user, group_title=message.chat.title or "")
-    except Exception:
-        text = _render_template(DEFAULT_GOODBYE_TEXT, user=left_user, group_title=message.chat.title or "")
-    try:
-        await bot.send_message(message.chat.id, text)
-    except Exception:
-        pass
+    await _send_templated(
+        message.chat.id, template,
+        settings["goodbye_media_file_id"], settings["goodbye_media_type"],
+        user=left_user, group_title=message.chat.title or "",
+    )
 
 
 class StatsMiddleware(BaseMiddleware):

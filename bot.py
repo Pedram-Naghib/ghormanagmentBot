@@ -29,6 +29,7 @@ from handlers import admin_commands  # noqa: F401
 from handlers import stats_commands  # noqa: F401
 from handlers import profile_command  # noqa: F401
 from handlers import panel_command  # noqa: F401
+from handlers import captcha  # noqa: F401
 from handlers import antispam  # noqa: F401  (must stay LAST)
 from handlers.tracking import StatsMiddleware
 
@@ -57,11 +58,14 @@ async def _set_command_menu():
         logger.warning("Could not set command menu: %s", e)
 
 
+ALLOWED_UPDATES = ["message", "callback_query", "my_chat_member", "chat_join_request"]
+
+
 async def run_polling():
     """Local development mode: long-poll Telegram for updates."""
     logger.info("Starting in POLLING mode (local development)...")
     await bot.remove_webhook()
-    await bot.infinity_polling(skip_pending=True)
+    await bot.infinity_polling(skip_pending=True, allowed_updates=ALLOWED_UPDATES)
 
 
 async def run_webhook():
@@ -88,7 +92,7 @@ async def run_webhook():
     app.router.add_post("/webhook/{token}", handle_webhook)
 
     await bot.remove_webhook()
-    await bot.set_webhook(url=f"{WEBHOOK_URL}{WEBHOOK_PATH}")
+    await bot.set_webhook(url=f"{WEBHOOK_URL}{WEBHOOK_PATH}", allowed_updates=ALLOWED_UPDATES)
 
     runner = web.AppRunner(app)
     await runner.setup()
