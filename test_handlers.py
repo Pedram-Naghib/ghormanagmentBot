@@ -400,6 +400,27 @@ async def test_message_registry_override_and_reset():
     check("message_registry_reset_clears_override", not messages.is_overridden("ban.success"))
 
 
+async def test_handler_modules_are_not_swapped():
+    """
+    Regression guard: on 2026-07, handlers/start_command.py was accidentally
+    overwritten with handlers/stats_commands.py's content (same docstring,
+    same functions) - /start silently stopped working because the module
+    bot.py imports for its side effects no longer registered a "start"
+    command handler at all. Nothing else caught this because no test
+    actually imports handlers.start_command. This just checks each module
+    defines what it's supposed to, so a copy/paste mix-up like that fails
+    the test suite instead of shipping silently.
+    """
+    from handlers import help_command, panel_command, start_command, stats_commands
+
+    check("start_command_module_has_start_handler", hasattr(start_command, "start_command"))
+    check("start_command_module_no_stats_functions", not hasattr(start_command, "daily_stats"))
+    check("stats_commands_module_has_daily_stats", hasattr(stats_commands, "daily_stats"))
+    check("stats_commands_module_has_total_stats", hasattr(stats_commands, "total_stats"))
+    check("help_command_module_has_send_help", hasattr(help_command, "send_help"))
+    check("panel_command_module_has_open_panel", hasattr(panel_command, "open_panel"))
+
+
 async def main():
     tests = [
         test_ban_denied_explains,
@@ -416,6 +437,7 @@ async def main():
         test_ban_protection_respects_hierarchy,
         test_global_admin_cache_grants_full_access,
         test_message_registry_override_and_reset,
+        test_handler_modules_are_not_swapped,
     ]
     for t in tests:
         try:

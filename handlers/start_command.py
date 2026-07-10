@@ -1,93 +1,91 @@
 """
-handlers/stats_commands.py
------------------------------
-آمار روزانه  -> activity in the last 24 hours (+ who joined in that window)
-آمار کل      -> all-time activity
+handlers/start_command.py
+----------------------------
+/start — shown in a private chat with the bot. If an image is registered
+under the key "start_banner" (see "ثبت تصویر" in handlers/admin_commands.py),
+it's sent as a photo with the welcome text as its caption; the image itself
+never changes when the person taps a button below it.
 
-Both list top message senders and top member-adders, scoped to this chat.
-Every name is a clickable tg://user mention (tap to open their profile),
-not just plain text.
+WHY "/start" STILL EXISTS DESPITE "NO SLASH COMMANDS": this one is not a
+user-typed command - Telegram's own client ALWAYS sends the literal text
+"/start" automatically the moment someone taps "Start" in a fresh DM or
+opens a "https://t.me/<bot>?startgroup=..." deep link. There is no text-
+only equivalent for that platform mechanic, so it has to stay wired up or
+the "add me to your group" flow (and opening a DM with the bot at all)
+would simply stop working. It is NOT exposed in the bot's "/" command
+menu (see bot.py) and is not something admins are meant to type by hand.
+
+SECURITY: the "راهنمای کامل" button is invoker-locked (utils/invoker_lock.py) -
+only the person who ran /start can press it.
 """
 
-from datetime import datetime, timedelta, timezone
+from telebot.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from telebot.types import Message
-
+from config import SUPPORT_URL
 from core import bot, db
-from utils.text import normalize_fa
+from handlers.help_command import send_help
+from utils.invoker_lock import encode, verify
 
-DAY = timedelta(hours=24)
-NEW_JOINERS_TOP_ADDERS_LIMIT = 3
+NAMESPACE = "strt"
 
-
-def _mention(user_id: int, name: str) -> str:
-    return f'<a href="tg://user?id={user_id}">{name}</a>'
+_bot_username_cache = None
 
 
-async def _format_stats(chat_id: int, since) -> str:
-    senders = await db.get_top_message_senders(chat_id, since=since)
-    adders = await db.get_top_adders(chat_id, since=since)
+async def _get_bot_username() -> str:
+    global _bot_username_cache
+    if _bot_username_cache is None:
+        me = await bot.get_me()
+        _bot_username_cache = me.username
+    return _bot_username_cache
 
-    lines = ["📨 <b>پیام‌ها:</b>"]
-    if senders:
-        for user_id, count in senders:
-            name = await db.get_user_display_name(chat_id, user_id)
-            lines.append(f"• {_mention(user_id, name)}: {count} پیام")
+
+def _start_text(first_name: str) -> str:
+    name = first_name or "دوست من"
+    return (
+        f"سلام {name} 👋\n\n"
+        f"من ربات مدیریت گروه‌ام. کارم اینه که کارهای تکراری و خسته‌کننده‌ی "
+        f"ادمین‌بودن رو از دوشتون بردارم:\n\n"
+        f"🚫 لینک و فوروارد مزاحم رو خودکار حذف می‌کنم\n"
+        f"🔇 اسپم‌کننده‌ها رو خودکار سکوت می‌کنم\n"
+        f"📊 آمار روزانه و کلی هر گروه رو نشون می‌دم\n"
+        f"👑 توی هر گروه، مالک و ادمین و عضو ویژه‌ی مخصوص همون گروه دارید\n\n"
+        f"هر گروه تنظیمات کاملاً مستقل خودش رو داره؛ چیزی که توی یک گروه "
+        f"تغییر بدید روی گروه‌های دیگه اثر نمی‌ذاره.\n\n"
+        f"برای شروع، من رو به گروه‌تون اضافه و ادمین کنید 👇"
+    )
+
+
+async def _start_keyboard(invoker_id: int) -> InlineKeyboardMarkup:
+    username = await _get_bot_username()
+    kb = InlineKeyboardMarkup(row_width=1)
+
+    add_url = (
+        f"https://t.me/{username}?startgroup=true"
+        f"&admin=delete_messages+restrict_members+invite_users"
+    )
+    kb.add(InlineKeyboardButton("➕ افزودن به گروه", url=add_url))
+    kb.add(InlineKeyboardButton("📖 راهنمای کامل", callback_data=encode(NAMESPACE, invoker_id, "show_help")))
+    if SUPPORT_URL:
+        kb.add(InlineKeyboardButton("💬 پشتیبانی", url=SUPPORT_URL))
+    return kb
+
+
+@bot.message_handler(commands=["start"])
+async def start_command(message: Message):
+    invoker_id = message.from_user.id if message.from_user else 0
+    text = _start_text(message.from_user.first_name if message.from_user else "")
+    keyboard = await _start_keyboard(invoker_id)
+    banner = await db.get_asset("start_banner")
+    if banner:
+        await bot.send_photo(message.chat.id, banner, caption=text, reply_markup=keyboard)
     else:
-        lines.append("پیامی ثبت نشده است.")
-
-    lines.append("\n👥 <b>اعضای اضافه‌شده:</b>")
-    if adders:
-        for user_id, count in adders:
-            name = await db.get_user_display_name(chat_id, user_id)
-            lines.append(f"• {_mention(user_id, name)}: {count} عضو")
-    else:
-        lines.append("عضوی اضافه نشده است.")
-
-    return "\n".join(lines)
+        await bot.reply_to(message, text, reply_markup=keyboard)
 
 
-async def _new_joiners_block(chat_id: int, since) -> str:
-    """اعضای جدید (۲۴ ساعت اخیر) + ۳ نفر برتر در افزودن عضو - only makes
-    sense in the daily stats context (it's specifically a 24h view), so it
-    lives here rather than on every /پروفایل lookup."""
-    recent_joins = await db.get_recently_joined_members(chat_id, since=since)
-    top_adders = await db.get_top_adders(chat_id, limit=NEW_JOINERS_TOP_ADDERS_LIMIT)
-
-    lines = ["\n➖➖➖➖➖➖➖➖➖➖\n🆕 <b>اعضای جدید (۲۴ ساعت اخیر)</b>"]
-    if recent_joins:
-        for user_id, _joined_at in recent_joins:
-            name = await db.get_user_display_name(chat_id, user_id)
-            lines.append(f"• {_mention(user_id, name)}")
-    else:
-        lines.append("در ۲۴ ساعت اخیر عضو جدیدی وارد نشده.")
-
-    lines.append("\n🏆 <b>۳ نفر برتر در افزودن عضو</b>")
-    if top_adders:
-        for user_id, count in top_adders:
-            name = await db.get_user_display_name(chat_id, user_id)
-            lines.append(f"• {_mention(user_id, name)}: {count} عضو")
-    else:
-        lines.append("هنوز کسی عضوی به این گروه اضافه نکرده.")
-
-    return "\n".join(lines)
-
-
-@bot.message_handler(
-    chat_types=["group", "supergroup"],
-    func=lambda m: normalize_fa(m.text or "").strip() in {"آمار روزانه", "امار روزانه", "آمار روز", "امار روز"},
-)
-async def daily_stats(message: Message):
-    since = datetime.now(timezone.utc) - DAY
-    text = await _format_stats(message.chat.id, since)
-    text += await _new_joiners_block(message.chat.id, since)
-    await bot.reply_to(message, f"📊 <b>آمار ۲۴ ساعت گذشته گروه</b>\n\n{text}")
-
-
-@bot.message_handler(
-    chat_types=["group", "supergroup"],
-    func=lambda m: normalize_fa(m.text or "").strip() in {"آمار کل", "امار کل"},
-)
-async def total_stats(message: Message):
-    text = await _format_stats(message.chat.id, None)
-    await bot.reply_to(message, f"📊 <b>آمار کلی گروه</b>\n\n{text}")
+@bot.callback_query_handler(func=lambda c: c.data.startswith(f"{NAMESPACE}:") and c.data.split(":")[2:3] == ["show_help"])
+async def start_show_help(call: CallbackQuery):
+    invoker_id, _parts = await verify(call, NAMESPACE)
+    if invoker_id is None:
+        return
+    await bot.answer_callback_query(call.id)
+    await send_help(call.message.chat.id, invoker_id)
