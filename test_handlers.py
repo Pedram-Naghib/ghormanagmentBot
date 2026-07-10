@@ -30,6 +30,8 @@ BOT_METHODS = [
     "reply_to", "send_message", "ban_chat_member", "restrict_chat_member",
     "unban_chat_member", "delete_message", "edit_message_text", "edit_message_caption",
     "answer_callback_query", "get_chat", "get_chat_member", "get_user_profile_photos", "get_me",
+    "send_photo", "send_video", "send_voice", "send_audio", "send_animation", "send_document",
+    "send_video_note", "approve_chat_join_request", "decline_chat_join_request", "delete_messages",
 ]
 DB_METHODS = [
     "get_user_role", "get_user_id_by_username", "get_user_display_name", "set_user_role",
@@ -38,6 +40,12 @@ DB_METHODS = [
     "remove_filtered_word", "list_filtered_words", "add_warning", "clear_warnings",
     "count_warnings", "list_warned_users", "set_welcome_settings", "set_goodbye_settings",
     "upsert_user", "log_member_added", "log_message",
+    "set_spam_limit", "set_spam_mute_minutes", "set_join_captcha_enabled",
+    "add_global_admin", "remove_global_admin", "list_global_admins",
+    "get_message_overrides", "set_message_override", "reset_message_override",
+    "cleanup_old_message_logs", "get_recently_joined_members", "get_top_adders",
+    "get_top_message_senders", "get_recent_message_ids", "get_all_logged_message_ids",
+    "delete_logged_messages",
 ]
 
 for m in BOT_METHODS:
@@ -200,7 +208,10 @@ async def test_welcome_message_sent_and_respects_toggle():
     await reset()
     core.db.get_chat_settings.return_value = {
         "welcome_enabled": True, "welcome_text": None,
+        "welcome_media_file_id": None, "welcome_media_type": None,
         "goodbye_enabled": True, "goodbye_text": None,
+        "goodbye_media_file_id": None, "goodbye_media_type": None,
+        "join_captcha_enabled": False,
     }
     new_member = user(50, first="Reza")
     msg = message(from_user=user(1), text="")
@@ -212,7 +223,10 @@ async def test_welcome_message_sent_and_respects_toggle():
     await reset()
     core.db.get_chat_settings.return_value = {
         "welcome_enabled": False, "welcome_text": None,
+        "welcome_media_file_id": None, "welcome_media_type": None,
         "goodbye_enabled": True, "goodbye_text": None,
+        "goodbye_media_file_id": None, "goodbye_media_type": None,
+        "join_captcha_enabled": False,
     }
     await tracking._send_welcome(msg)
     check("welcome_not_sent_when_disabled", not core.bot.send_message.called)
@@ -223,17 +237,28 @@ async def test_welcome_message_sent_and_respects_toggle():
 # ---------------------------------------------------------------- #
 async def test_lock_deletes_sticker_when_enabled():
     from handlers import antispam
+    from utils import chat_config_cache
 
     await reset()
+    chat_id = 9001  # dedicated chat_id per sub-case so the cache can't bleed between them
+    chat_config_cache.invalidate(chat_id)
     core.db.get_chat_locks.return_value = {"sticker": True}
-    sticker_msg = message(from_user=user(4), text="")
+    core.db.list_filtered_words.return_value = []
+    core.db.get_chat_settings.return_value = {"spam_message_limit": 999, "spam_time_window_seconds": 3, "spam_mute_minutes": 30}
+    sticker_msg = message(chat_id=chat_id, from_user=user(4), text="")
     sticker_msg.content_type = "sticker"
-    result = await antispam._check_locks(sticker_msg)
+    result = await antispam.apply_normal_member_restrictions(sticker_msg)
     check("lock_sticker_on_deletes", result is True and core.bot.delete_message.await_args is not None)
 
     await reset()
+    chat_id2 = 9002
+    chat_config_cache.invalidate(chat_id2)
     core.db.get_chat_locks.return_value = {"sticker": False}
-    result = await antispam._check_locks(sticker_msg)
+    core.db.list_filtered_words.return_value = []
+    core.db.get_chat_settings.return_value = {"spam_message_limit": 999, "spam_time_window_seconds": 3, "spam_mute_minutes": 30}
+    sticker_msg2 = message(chat_id=chat_id2, from_user=user(4), text="")
+    sticker_msg2.content_type = "sticker"
+    result = await antispam.apply_normal_member_restrictions(sticker_msg2)
     check("lock_sticker_off_ignores", result is False and not core.bot.delete_message.called)
 
 
@@ -242,17 +267,28 @@ async def test_lock_deletes_sticker_when_enabled():
 # ---------------------------------------------------------------- #
 async def test_filtered_word_deletes_message():
     from handlers import antispam
+    from utils import chat_config_cache
 
     await reset()
+    chat_id = 9003
+    chat_config_cache.invalidate(chat_id)
+    core.db.get_chat_locks.return_value = {}
     core.db.list_filtered_words.return_value = ["فحش‌بد"]
-    msg = message(from_user=user(5), text="این یک فحش‌بد است")
-    result = await antispam._check_filtered_words(msg)
+    core.db.get_chat_settings.return_value = {"spam_message_limit": 999, "spam_time_window_seconds": 3, "spam_mute_minutes": 30}
+    msg = message(chat_id=chat_id, from_user=user(5), text="این یک فحش‌بد است")
+    msg.content_type = "text"
+    result = await antispam.apply_normal_member_restrictions(msg)
     check("filtered_word_deletes", result is True and core.bot.delete_message.await_args is not None)
 
     await reset()
+    chat_id2 = 9004
+    chat_config_cache.invalidate(chat_id2)
+    core.db.get_chat_locks.return_value = {}
     core.db.list_filtered_words.return_value = ["فحش‌بد"]
-    clean_msg = message(from_user=user(5), text="سلام دوستان")
-    result = await antispam._check_filtered_words(clean_msg)
+    core.db.get_chat_settings.return_value = {"spam_message_limit": 999, "spam_time_window_seconds": 3, "spam_mute_minutes": 30}
+    clean_msg = message(chat_id=chat_id2, from_user=user(5), text="سلام دوستان")
+    clean_msg.content_type = "text"
+    result = await antispam.apply_normal_member_restrictions(clean_msg)
     check("filtered_word_ignores_clean_text", result is False and not core.bot.delete_message.called)
 
 
@@ -276,6 +312,94 @@ async def test_bot_permission_error_is_translated():
     check("bot_permission_error_not_raw", reply_call is not None and "Forbidden" not in reply_call.args[1])
 
 
+# ---------------------------------------------------------------- #
+# 11) Role hierarchy: owner2 can manage admin/vip but not another owner2
+#     or the owner; admin can only manage vip. See utils/permissions.py.
+# ---------------------------------------------------------------- #
+async def test_role_hierarchy_can_assign_role():
+    from utils.permissions import can_assign_role
+
+    await reset()
+    core.db.get_user_role.return_value = "owner"
+    check("owner_can_assign_owner2", await can_assign_role(core.db, 1, 10, "owner2") is True)
+    check("owner_can_assign_admin", await can_assign_role(core.db, 1, 10, "admin") is True)
+
+    core.db.get_user_role.return_value = "owner2"
+    check("owner2_can_assign_admin", await can_assign_role(core.db, 1, 10, "admin") is True)
+    check("owner2_cannot_assign_owner2", await can_assign_role(core.db, 1, 10, "owner2") is False)
+
+    core.db.get_user_role.return_value = "admin"
+    check("admin_can_assign_vip", await can_assign_role(core.db, 1, 10, "vip") is True)
+    check("admin_cannot_assign_admin", await can_assign_role(core.db, 1, 10, "admin") is False)
+    check("admin_cannot_assign_owner2", await can_assign_role(core.db, 1, 10, "owner2") is False)
+
+
+# ---------------------------------------------------------------- #
+# 12) Ban/mute protection is hierarchy-aware: an admin cannot ban an
+#     owner2 or another admin (outranks() must be False in both cases).
+# ---------------------------------------------------------------- #
+async def test_ban_protection_respects_hierarchy():
+    await reset()
+    admin = user(1)
+    owner2_target = user(7, first="Boss2")
+
+    async def role_side_effect(chat_id, uid):
+        return "admin" if uid == 1 else "owner2"
+
+    core.db.get_user_role.side_effect = role_side_effect
+    msg = message(from_user=admin, text="بن", reply_to_message=message(from_user=owner2_target))
+    await admin_commands.ban_user(msg)
+    check("admin_cannot_ban_owner2", not core.bot.ban_chat_member.called)
+    reply_text = core.bot.reply_to.await_args.args[1]
+    check("admin_cannot_ban_owner2_explains", "رتبه" in reply_text, reply_text)
+
+
+# ---------------------------------------------------------------- #
+# 13) Global Admin (ادمین کل): dynamically promoted, cached in memory,
+#     gets identical access to a hardcoded Global Owner in ANY chat.
+# ---------------------------------------------------------------- #
+async def test_global_admin_cache_grants_full_access():
+    from utils import global_admins
+    from utils.permissions import is_authorized_admin, is_super_admin
+
+    await reset()
+    core.db.list_global_admins.return_value = [(555, 999)]
+    await global_admins.load(core.db)
+    try:
+        check("global_admin_is_super_admin", is_super_admin(555) is True)
+        core.db.get_user_role.return_value = "normal"  # even with no per-chat role at all
+        result = await is_authorized_admin(core.db, chat_id=123, user_id=555)
+        check("global_admin_authorized_without_chat_role", result is True)
+    finally:
+        await global_admins.remove(core.db, 555)  # don't leak into other tests
+
+
+# ---------------------------------------------------------------- #
+# 14) Message registry (utils/messages.py): override applies immediately,
+#     reset reverts, malformed template never crashes a live reply.
+# ---------------------------------------------------------------- #
+async def test_message_registry_override_and_reset():
+    from utils import messages
+
+    await reset()
+    core.db.get_message_overrides.return_value = {}
+    await messages.load(core.db)
+
+    default_text = messages.get("ban.success", name="Ali", funny_line="bye")
+    check("message_registry_default_renders", "Ali" in default_text)
+
+    await messages.set_override(core.db, "ban.success", "CUSTOM {name} - {funny_line}")
+    overridden_text = messages.get("ban.success", name="Sara", funny_line="later")
+    check("message_registry_override_applies", "CUSTOM Sara - later" == overridden_text, overridden_text)
+
+    await messages.set_override(core.db, "ban.success", "Broken {this_key_does_not_exist}")
+    fallback_text = messages.get("ban.success", name="Reza", funny_line="ok")
+    check("message_registry_bad_template_falls_back", "Reza" in fallback_text and "Broken" not in fallback_text)
+
+    await messages.reset_override(core.db, "ban.success")
+    check("message_registry_reset_clears_override", not messages.is_overridden("ban.success"))
+
+
 async def main():
     tests = [
         test_ban_denied_explains,
@@ -288,6 +412,10 @@ async def main():
         test_lock_deletes_sticker_when_enabled,
         test_filtered_word_deletes_message,
         test_bot_permission_error_is_translated,
+        test_role_hierarchy_can_assign_role,
+        test_ban_protection_respects_hierarchy,
+        test_global_admin_cache_grants_full_access,
+        test_message_registry_override_and_reset,
     ]
     for t in tests:
         try:

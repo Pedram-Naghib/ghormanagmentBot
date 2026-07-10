@@ -15,7 +15,7 @@ command names; a page listing everything at once with a text box each is
 a much better fit for "go through all of these and adjust the wording".
 
 AUTH: plain HTTP Basic Auth against ADMIN_PANEL_USERNAME/PASSWORD in .env.
-If either is empty, the page is disabled entirely (404) rather than ever
+If either is empty, the page is disabled entirely (always returns 401) rather than ever
 accepting a blank or guessable login - see register_admin_panel_routes().
 
 AVAILABILITY: registered in bot.py regardless of run mode (polling OR
@@ -149,7 +149,7 @@ async def _handle_reset(request: web.Request) -> web.Response:
 
 def register_admin_panel_routes(app: web.Application):
     """Call from bot.py to expose the editor at /admin/messages. Does
-    nothing (page stays 404) if ADMIN_PANEL_USERNAME/PASSWORD aren't set -
+    nothing (page always returns 401/"auth required") if ADMIN_PANEL_USERNAME/PASSWORD aren't set -
     see _check_auth()."""
     app.router.add_get("/admin/messages", _handle_get)
     app.router.add_post("/admin/messages/save", _handle_save)
