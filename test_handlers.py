@@ -45,7 +45,7 @@ DB_METHODS = [
     "get_message_overrides", "set_message_override", "reset_message_override",
     "cleanup_old_message_logs", "get_recently_joined_members", "get_top_adders",
     "get_top_message_senders", "get_recent_message_ids", "get_all_logged_message_ids",
-    "delete_logged_messages",
+    "delete_logged_messages", "get_asset", "set_asset",
 ]
 
 for m in BOT_METHODS:
@@ -88,6 +88,7 @@ async def reset():
         getattr(core.bot, m).reset_mock(side_effect=True, return_value=True)
     for m in DB_METHODS:
         getattr(core.db, m).reset_mock(side_effect=True, return_value=True)
+    core.db.get_asset.return_value = None  # "no banner registered" - the common case
 
 
 # ---------------------------------------------------------------- #
@@ -400,6 +401,103 @@ async def test_message_registry_override_and_reset():
     check("message_registry_reset_clears_override", not messages.is_overridden("ban.success"))
 
 
+# ---------------------------------------------------------------- #
+# 15) Banners (عکس/گیف/ویدیو) for بن/میوت, and utils/banners.py itself
+# ---------------------------------------------------------------- #
+async def test_ban_sends_registered_banner_instead_of_plain_reply():
+    await reset()
+    core.db.get_user_role.side_effect = lambda chat_id, uid: "owner" if uid == 1 else "normal"
+    core.db.get_asset.return_value = {"file_id": "FILE123", "content_type": "photo"}
+    admin, target = user(1), user(2, first="Sara")
+    msg = message(from_user=admin, text="بن", reply_to_message=message(from_user=target))
+
+    await admin_commands.ban_user(msg)
+
+    check("ban_banner_send_photo_called", core.bot.send_photo.await_args is not None)
+    check("ban_banner_no_plain_reply", core.bot.reply_to.await_args is None)
+    if core.bot.send_photo.await_args:
+        _args, kwargs = core.bot.send_photo.call_args
+        check("ban_banner_caption_has_name", "Sara" in kwargs.get("caption", ""), kwargs)
+
+
+async def test_mute_sends_registered_animation_banner():
+    await reset()
+    core.db.get_user_role.side_effect = lambda chat_id, uid: "owner" if uid == 1 else "normal"
+    core.db.get_asset.return_value = {"file_id": "GIF123", "content_type": "animation"}
+    admin, target = user(1), user(2, first="Sara")
+    msg = message(from_user=admin, text="میوت", reply_to_message=message(from_user=target))
+
+    await admin_commands.mute_user(msg)
+
+    check("mute_banner_send_animation_called", core.bot.send_animation.await_args is not None)
+    check("mute_banner_no_photo_sent", core.bot.send_photo.await_args is None)
+    check("mute_banner_no_plain_reply", core.bot.reply_to.await_args is None)
+
+
+async def test_ban_falls_back_to_plain_reply_when_no_banner_registered():
+    await reset()
+    core.db.get_user_role.side_effect = lambda chat_id, uid: "owner" if uid == 1 else "normal"
+    # core.db.get_asset already defaults to None via reset() above
+    admin, target = user(1), user(2, first="Sara")
+    msg = message(from_user=admin, text="بن", reply_to_message=message(from_user=target))
+
+    await admin_commands.ban_user(msg)
+
+    check("ban_no_banner_falls_back_to_reply", core.bot.reply_to.await_args is not None)
+    check("ban_no_banner_no_send_photo", core.bot.send_photo.await_args is None)
+
+
+async def test_set_image_accepts_gif_and_video():
+    owner = user(999)  # matches OWNER_USER_IDS in the test env
+
+    await reset()
+    gif_reply = SimpleNamespace(content_type="animation", animation=SimpleNamespace(file_id="GIFXYZ"))
+    msg = message(from_user=owner, text="ثبت تصویر ban_banner", reply_to_message=gif_reply)
+    await admin_commands.set_image(msg)
+    check("set_image_gif_stores_correct_type", core.db.set_asset.await_args is not None)
+    if core.db.set_asset.await_args:
+        args, kwargs = core.db.set_asset.call_args
+        check(
+            "set_image_gif_args_correct",
+            args[0] == "ban_banner" and args[1] == "GIFXYZ" and kwargs.get("content_type") == "animation",
+            (args, kwargs),
+        )
+
+    await reset()
+    video_reply = SimpleNamespace(content_type="video", video=SimpleNamespace(file_id="VIDXYZ"))
+    msg2 = message(from_user=owner, text="ثبت تصویر mute_banner", reply_to_message=video_reply)
+    await admin_commands.set_image(msg2)
+    if core.db.set_asset.await_args:
+        args, kwargs = core.db.set_asset.call_args
+        check(
+            "set_image_video_args_correct",
+            args[0] == "mute_banner" and args[1] == "VIDXYZ" and kwargs.get("content_type") == "video",
+            (args, kwargs),
+        )
+
+    await reset()
+    text_reply = message(from_user=user(2))  # content_type defaults to "text" - not a valid banner
+    msg3 = message(from_user=owner, text="ثبت تصویر ban_banner", reply_to_message=text_reply)
+    await admin_commands.set_image(msg3)
+    check("set_image_rejects_non_media_reply", core.db.set_asset.await_args is None)
+
+
+async def test_send_banner_helper_directly():
+    from utils.banners import send_banner
+
+    await reset()
+    core.db.get_asset.return_value = None
+    result = await send_banner(100, "no_such_key", "caption text")
+    check("send_banner_returns_false_when_unregistered", result is False)
+    check("send_banner_sends_nothing_when_unregistered", core.bot.send_photo.await_args is None)
+
+    await reset()
+    core.db.get_asset.return_value = {"file_id": "VID1", "content_type": "video"}
+    result = await send_banner(100, "some_key", "caption text")
+    check("send_banner_returns_true_when_registered", result is True)
+    check("send_banner_dispatches_to_send_video", core.bot.send_video.await_args is not None)
+
+
 async def test_handler_modules_are_not_swapped():
     """
     Regression guard: on 2026-07, handlers/start_command.py was accidentally
@@ -437,6 +535,11 @@ async def main():
         test_ban_protection_respects_hierarchy,
         test_global_admin_cache_grants_full_access,
         test_message_registry_override_and_reset,
+        test_ban_sends_registered_banner_instead_of_plain_reply,
+        test_mute_sends_registered_animation_banner,
+        test_ban_falls_back_to_plain_reply_when_no_banner_registered,
+        test_set_image_accepts_gif_and_video,
+        test_send_banner_helper_directly,
         test_handler_modules_are_not_swapped,
     ]
     for t in tests:

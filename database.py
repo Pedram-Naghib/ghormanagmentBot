@@ -155,6 +155,12 @@ class Database:
                 );
                 """
             )
+            # content_type: "photo" (default, for anything saved before this
+            # column existed), "animation" (GIF), or "video" - lets a banner
+            # be a still image, a GIF, or a short video, not just a photo.
+            await conn.execute(
+                "ALTER TABLE bot_assets ADD COLUMN IF NOT EXISTS content_type TEXT NOT NULL DEFAULT 'photo';"
+            )
 
             # --- Welcome/goodbye columns on chat_settings (migration-safe:
             # ADD COLUMN IF NOT EXISTS works fine on a table that already
@@ -695,20 +701,27 @@ class Database:
     # that exact file" - no re-upload, no bandwidth or storage cost on our
     # side no matter how many images you add or how large they are.
 
-    async def get_asset(self, key: str) -> Optional[str]:
+    async def get_asset(self, key: str) -> Optional[dict]:
+        """Returns {"file_id": ..., "content_type": "photo"|"animation"|"video"}
+        or None if nothing is registered under this key. See utils/banners.py
+        for the helper that actually sends this as the right message type."""
         async with self.pool.acquire() as conn:
-            return await conn.fetchval("SELECT file_id FROM bot_assets WHERE key=$1", key)
+            row = await conn.fetchrow(
+                "SELECT file_id, content_type FROM bot_assets WHERE key=$1", key
+            )
+        return dict(row) if row else None
 
-    async def set_asset(self, key: str, file_id: str, set_by: Optional[int] = None):
+    async def set_asset(self, key: str, file_id: str, content_type: str = "photo", set_by: Optional[int] = None):
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO bot_assets (key, file_id, set_by)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (key) DO UPDATE SET file_id = EXCLUDED.file_id, set_by = EXCLUDED.set_by,
+                INSERT INTO bot_assets (key, file_id, content_type, set_by)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (key) DO UPDATE SET file_id = EXCLUDED.file_id,
+                    content_type = EXCLUDED.content_type, set_by = EXCLUDED.set_by,
                     updated_at = now()
                 """,
-                key, file_id, set_by,
+                key, file_id, content_type, set_by,
             )
 
     # ---------------------------------------------------------------- #

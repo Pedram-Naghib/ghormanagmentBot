@@ -22,8 +22,9 @@ only the person who ran /start can press it.
 from telebot.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import SUPPORT_URL
-from core import bot, db
+from core import bot
 from handlers.help_command import send_help
+from utils.banners import send_banner
 from utils.invoker_lock import encode, verify
 
 NAMESPACE = "strt"
@@ -75,10 +76,8 @@ async def start_command(message: Message):
     invoker_id = message.from_user.id if message.from_user else 0
     text = _start_text(message.from_user.first_name if message.from_user else "")
     keyboard = await _start_keyboard(invoker_id)
-    banner = await db.get_asset("start_banner")
-    if banner:
-        await bot.send_photo(message.chat.id, banner, caption=text, reply_markup=keyboard)
-    else:
+    sent_banner = await send_banner(message.chat.id, "start_banner", text, reply_markup=keyboard)
+    if not sent_banner:
         await bot.reply_to(message, text, reply_markup=keyboard)
 
 

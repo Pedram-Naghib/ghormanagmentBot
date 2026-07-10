@@ -45,6 +45,7 @@ from utils.permissions import (
     outranks,
 )
 from utils import chat_config_cache, messages
+from utils.banners import send_banner
 from utils.telegram_errors import bot_permission_error_reply
 from utils.text import matches_command, normalize_fa, normalize_trigger
 
@@ -258,7 +259,10 @@ async def ban_user(message: Message):
     try:
         await bot.ban_chat_member(message.chat.id, target.id)
         funny_line = _pick_ban_announcement(target.full_name, message.chat.title or "این گروه")
-        await bot.reply_to(message, messages.get("ban.success", name=target.full_name, funny_line=funny_line))
+        text = messages.get("ban.success", name=target.full_name, funny_line=funny_line)
+        sent_banner = await send_banner(message.chat.id, "ban_banner", text, reply_to_message_id=message.message_id)
+        if not sent_banner:
+            await bot.reply_to(message, text)
     except Exception as e:
         await bot.reply_to(message, bot_permission_error_reply(e))
 
@@ -362,14 +366,17 @@ async def mute_user(message: Message):
                 permissions=ChatPermissions(can_send_messages=False),
                 until_date=until,
             )
-            await bot.reply_to(message, messages.get("mute.timed", name=target.full_name, minutes=minutes))
+            text = messages.get("mute.timed", name=target.full_name, minutes=minutes)
         else:
             # No until_date -> Telegram treats this as "forever" (until manually lifted).
             await bot.restrict_chat_member(
                 message.chat.id, target.id,
                 permissions=ChatPermissions(can_send_messages=False),
             )
-            await bot.reply_to(message, messages.get("mute.forever", name=target.full_name))
+            text = messages.get("mute.forever", name=target.full_name)
+        sent_banner = await send_banner(message.chat.id, "mute_banner", text, reply_to_message_id=message.message_id)
+        if not sent_banner:
+            await bot.reply_to(message, text)
     except Exception as e:
         await bot.reply_to(message, bot_permission_error_reply(e))
 
@@ -790,30 +797,41 @@ async def show_spam_settings(message: Message):
 
 
 # ---------------------------------------------------------------- #
-# IMAGE REGISTRATION — reply to a photo with "ثبت تصویر [key]"
+# IMAGE REGISTRATION — reply to a photo/GIF/video with "ثبت تصویر [key]"
 # ---------------------------------------------------------------- #
 # Global-Owner-only (these are bot-wide assets, e.g. the /start or /help
-# banner, not per-group). Captures the photo's file_id and stores just
-# that tiny string - Telegram keeps hosting the actual image forever, we
-# never touch the file bytes. This is how you add new images later: send
-# the photo to any chat with the bot, reply to it with this command, done.
+# banner, not per-group). Captures the media's file_id (+ which of
+# photo/animation/video it is - see utils/banners.py) and stores just that
+# tiny string - Telegram keeps hosting the actual file forever, we never
+# touch the bytes. This is how you add new banners later: send the
+# photo/GIF/video to any chat with the bot, reply to it with this command, done.
+
+_BANNER_CONTENT_TYPES = ("photo", "animation", "video")
+
 
 @bot.message_handler(func=lambda m: normalize_trigger(m.text or "").strip().startswith(SET_IMAGE_PREFIX))
 async def set_image(message: Message):
     if not await _require_global_owner(message):
         return
     parts = _norm(message).split()
-    if len(parts) < 3 or not message.reply_to_message or not message.reply_to_message.photo:
+    reply = message.reply_to_message
+    if len(parts) < 3 or not reply or reply.content_type not in _BANNER_CONTENT_TYPES:
         await bot.reply_to(
             message,
-            "⚠️ روی یک عکس ریپلای کنید و بنویسید:\n<code>ثبت تصویر [کلید]</code>\n"
-            "مثال: <code>ثبت تصویر start_banner</code>",
+            "⚠️ روی یک عکس، گیف یا ویدیو ریپلای کنید و بنویسید:\n<code>ثبت تصویر [کلید]</code>\n"
+            "مثال: <code>ثبت تصویر start_banner</code> یا <code>ثبت تصویر ban_banner</code>",
         )
         return
     key = parts[2]
-    file_id = message.reply_to_message.photo[-1].file_id
-    await db.set_asset(key, file_id, set_by=message.from_user.id)
-    await bot.reply_to(message, f"✅ تصویر با کلید <code>{key}</code> ذخیره شد.")
+    if reply.content_type == "photo":
+        file_id = reply.photo[-1].file_id
+    elif reply.content_type == "animation":
+        file_id = reply.animation.file_id
+    else:  # video
+        file_id = reply.video.file_id
+    await db.set_asset(key, file_id, content_type=reply.content_type, set_by=message.from_user.id)
+    kind_label = {"photo": "تصویر", "animation": "گیف", "video": "ویدیو"}[reply.content_type]
+    await bot.reply_to(message, f"✅ {kind_label} با کلید <code>{key}</code> ذخیره شد.")
 
 
 # ---------------------------------------------------------------- #

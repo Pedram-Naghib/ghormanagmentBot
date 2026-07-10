@@ -5,11 +5,11 @@ handlers/panel_command.py
 تنظیمات پیشرفته), replacing a growing pile of separate text commands with
 one navigable menu, the way DIGI ANTI's panel works.
 
-If an image is registered under the key "panel_banner" (see "ثبت تصویر" in
-handlers/admin_commands.py), it's sent once as a photo and stays exactly
-as-is; only the caption and keyboard change as the admin taps between
-sections (via editMessageCaption), so the image never re-sends or changes -
-same pattern as /start and «راهنما».
+If media is registered under the key "panel_banner" (see "ثبت تصویر" in
+handlers/admin_commands.py - can be a photo, GIF, or video), it's sent once
+and stays exactly as-is; only the caption and keyboard change as the admin
+taps between sections (via editMessageCaption), so the banner never
+re-sends or changes - same pattern as /start and «راهنما».
 
 SECURITY: every button here is invoker-locked (see utils/panel_auth.py) -
 only the admin who opened THIS panel message can press its buttons. Anyone
@@ -22,6 +22,7 @@ from telebot.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from core import bot, db
 from handlers.help_command import send_help
+from utils.banners import is_banner_message, send_banner
 from utils.locks import LOCKS, is_lock_enabled
 from utils import chat_config_cache
 from utils.panel_auth import encode, verify_panel_callback
@@ -169,18 +170,16 @@ async def _render_main(message: Message, invoker_id: int, edit: bool):
     if edit:
         await _edit_call_message(message.chat.id, message.message_id, message.content_type, MAIN_TEXT, kb)
     else:
-        banner = await db.get_asset("panel_banner")
-        if banner:
-            await bot.send_photo(message.chat.id, banner, caption=MAIN_TEXT, reply_markup=kb, reply_to_message_id=message.message_id)
-        else:
+        sent_banner = await send_banner(message.chat.id, "panel_banner", MAIN_TEXT, reply_markup=kb, reply_to_message_id=message.message_id)
+        if not sent_banner:
             await bot.reply_to(message, MAIN_TEXT, reply_markup=kb)
 
 
 async def _edit_call_message(chat_id: int, message_id: int, content_type: str, text: str, kb: InlineKeyboardMarkup):
-    """Edits the panel message in place, whether it's plain text or a photo
-    with a caption (پنل بنر - see "ثبت تصویر panel_banner"). Mirrors the
-    same pattern used by /start and «راهنما»."""
-    if content_type == "photo":
+    """Edits the panel message in place, whether it's plain text or a
+    photo/GIF/video with a caption (پنل بنر - see "ثبت تصویر panel_banner").
+    Mirrors the same pattern used by /start and «راهنما»."""
+    if is_banner_message(content_type):
         await bot.edit_message_caption(caption=text, chat_id=chat_id, message_id=message_id, reply_markup=kb)
     else:
         await bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=kb)

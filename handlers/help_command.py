@@ -26,7 +26,8 @@ does whenever a feature changes. ***
 
 from telebot.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from core import bot, db
+from core import bot
+from utils.banners import is_banner_message, send_banner
 from utils.invoker_lock import encode, verify
 from utils.text import normalize_trigger
 
@@ -205,14 +206,9 @@ def _section_keyboard(invoker_id: int) -> InlineKeyboardMarkup:
 
 async def send_help(chat_id: int, invoker_id: int, reply_to_message_id: int = None):
     """Shared entry point - used by «راهنما», /start's help button, and the panel's help button."""
-    banner = await db.get_asset("help_banner")
     keyboard = _main_keyboard(invoker_id)
-    if banner:
-        await bot.send_photo(
-            chat_id, banner, caption=OVERVIEW_TEXT, reply_markup=keyboard,
-            reply_to_message_id=reply_to_message_id,
-        )
-    else:
+    sent_banner = await send_banner(chat_id, "help_banner", OVERVIEW_TEXT, reply_markup=keyboard, reply_to_message_id=reply_to_message_id)
+    if not sent_banner:
         await bot.send_message(
             chat_id, OVERVIEW_TEXT, reply_markup=keyboard,
             reply_to_message_id=reply_to_message_id,
@@ -231,7 +227,7 @@ async def help_back_to_main(call: CallbackQuery):
         return
     await bot.answer_callback_query(call.id)
     kb = _main_keyboard(invoker_id)
-    if call.message.content_type == "photo":
+    if is_banner_message(call.message.content_type):
         await bot.edit_message_caption(
             caption=OVERVIEW_TEXT, chat_id=call.message.chat.id,
             message_id=call.message.message_id, reply_markup=kb,
@@ -257,7 +253,7 @@ async def help_show_section(call: CallbackQuery):
     section = SECTIONS[key]
     await bot.answer_callback_query(call.id)
     kb = _section_keyboard(invoker_id)
-    if call.message.content_type == "photo":
+    if is_banner_message(call.message.content_type):
         await bot.edit_message_caption(
             caption=section["text"], chat_id=call.message.chat.id,
             message_id=call.message.message_id, reply_markup=kb,
