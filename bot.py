@@ -15,7 +15,7 @@ import logging
 
 from aiohttp import web
 
-from config import BOT_TOKEN, WEBAPP_HOST, WEBAPP_PORT, WEBHOOK_PATH, WEBHOOK_URL
+from config import BOT_TOKEN, MESSAGE_LOG_RETENTION_DAYS, WEBAPP_HOST, WEBAPP_PORT, WEBHOOK_PATH, WEBHOOK_URL
 from core import bot, db
 from docs_page import register_docs_route
 
@@ -57,6 +57,28 @@ async def _set_command_menu():
 
 
 ALLOWED_UPDATES = ["message", "callback_query", "my_chat_member", "chat_join_request"]
+
+CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60  # every 6 hours
+
+
+async def _message_log_cleanup_loop():
+    """
+    message_logs stores one row PER MESSAGE (needed for «آمار روزانه» and
+    for «حذف N»/«حذف کل» to find real message_ids to delete) and would
+    otherwise grow forever, unlike the running counters in group_users
+    (messages_all_time - what «آمار کل» actually reads, unaffected by this).
+    This prunes anything older than MESSAGE_LOG_RETENTION_DAYS on a timer so
+    storage stays bounded regardless of how chatty a group gets - see the
+    comment on MESSAGE_LOG_RETENTION_DAYS in config.py for the trade-offs.
+    """
+    while True:
+        try:
+            deleted = await db.cleanup_old_message_logs(MESSAGE_LOG_RETENTION_DAYS)
+            if deleted:
+                logger.info("message_logs cleanup: removed %d rows older than %d days", deleted, MESSAGE_LOG_RETENTION_DAYS)
+        except Exception as e:
+            logger.warning("message_logs cleanup failed: %s", e)
+        await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
 
 
 async def run_polling():
@@ -109,6 +131,7 @@ async def main():
 
     bot.setup_middleware(StatsMiddleware())
     await _set_command_menu()
+    asyncio.create_task(_message_log_cleanup_loop())
     try:
         if WEBHOOK_URL:
             await run_webhook()

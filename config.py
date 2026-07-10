@@ -57,5 +57,17 @@ DEFAULT_SPAM_MUTE_MINUTES = int(os.getenv("SPAM_MUTE_MINUTES", 30))
 # --- Stats ---
 STATS_TOP_N = int(os.getenv("STATS_TOP_N", 15))
 
+# --- Message log retention ---
+# message_logs stores ONE ROW PER MESSAGE (needed for «آمار روزانه» and for
+# «حذف N»/«حذف کل» to know real Telegram message_ids to delete) - unlike
+# the running totals in group_users (messages_all_time), this table grows
+# forever unless pruned. A background job (see bot.py) deletes rows older
+# than this many days on a timer, keeping Supabase storage bounded
+# regardless of how chatty a group is. «آمار کل» is unaffected (it's a
+# counter, not row-based); «آمار روزانه» only ever needs 24h so this has
+# huge headroom; «حذف کل» will only reach messages within this window,
+# which matches what's actually useful anyway.
+MESSAGE_LOG_RETENTION_DAYS = int(os.getenv("MESSAGE_LOG_RETENTION_DAYS", 3))
+
 # --- Optional: shown as a button on /start if set ---
-SUPPORT_URL = os.getenv("SUPPORT_URL", "")
+SUPPORT_URL = os.getenv("SUPPORT_URL", "https://t.me/it_modi")

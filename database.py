@@ -325,21 +325,39 @@ class Database:
     # ---------------------------------------------------------------- #
 
     async def log_message(self, chat_id: int, user_id: int, message_id: Optional[int] = None):
+        # Combined into ONE round trip (was 2 separate .execute() calls in a
+        # transaction - same correctness, half the network latency, since
+        # this runs on every single group message).
         async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute(
-                    """
+            await conn.execute(
+                """
+                WITH upsert AS (
                     INSERT INTO group_users (chat_id, user_id, messages_all_time)
                     VALUES ($1, $2, 1)
                     ON CONFLICT (chat_id, user_id) DO UPDATE
                         SET messages_all_time = group_users.messages_all_time + 1
-                    """,
-                    chat_id, user_id,
+                    RETURNING 1
                 )
-                await conn.execute(
-                    "INSERT INTO message_logs (chat_id, user_id, message_id) VALUES ($1, $2, $3)",
-                    chat_id, user_id, message_id,
-                )
+                INSERT INTO message_logs (chat_id, user_id, message_id)
+                SELECT $1, $2, $3 FROM upsert
+                """,
+                chat_id, user_id, message_id,
+            )
+
+    async def cleanup_old_message_logs(self, retention_days: int) -> int:
+        """Deletes message_logs rows older than `retention_days`. Does NOT
+        touch group_users.messages_all_time (the all-time counter used by
+        «آمار کل» is unaffected - only per-message rows used for «آمار
+        روزانه» and «حذف N»/«حذف کل» are pruned). Returns rows deleted."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM message_logs WHERE sent_at < now() - ($1 || ' days')::interval",
+                str(retention_days),
+            )
+        try:
+            return int(result.split()[-1])
+        except (ValueError, IndexError):
+            return 0
 
     async def get_user_message_count(
         self, chat_id: int, user_id: int, since: Optional[datetime] = None

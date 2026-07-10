@@ -69,8 +69,11 @@ async def can_manage_chat_roles(db: Database, chat_id: int, user_id: int) -> boo
 
 
 async def is_normal_member(db: Database, chat_id: int, user_id: int) -> bool:
-    """A 'Normal' member is not an authorized admin and not a VIP, in THIS chat."""
-    if await is_authorized_admin(db, chat_id, user_id):
+    """A 'Normal' member is not an authorized admin and not a VIP, in THIS chat.
+    Runs on EVERY group message (see handlers/antispam.py), so this fetches
+    the role exactly once - it used to call is_authorized_admin() (1 query)
+    and then query the role again itself (a 2nd, redundant query)."""
+    if is_global_owner(user_id):
         return False
     role = await db.get_user_role(chat_id, user_id)
-    return role != "vip"
+    return role not in ("owner", "admin", "vip")

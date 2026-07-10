@@ -20,6 +20,7 @@ from typing import Deque, Dict
 from telebot.types import ChatPermissions, Message
 
 from core import bot, db
+from utils import chat_config_cache
 from utils.locks import LOCKS, is_lock_enabled
 from utils.permissions import is_normal_member
 from utils.text import normalize_fa
@@ -30,45 +31,26 @@ from utils.text import normalize_fa
 _recent_messages: Dict[int, Dict[int, Deque[float]]] = defaultdict(lambda: defaultdict(deque))
 
 
-async def _check_locks(message: Message) -> bool:
-    """
-    Rule 1: delete messages tripping any content-type lock that's ON for
-    this chat (پنل -> قفل‌ها). See utils/locks.py for the list and for how
-    an unconfigured chat falls back to the pre-panel defaults (link+forward).
-    """
-    locks_row = await db.get_chat_locks(message.chat.id)
-    for lock in LOCKS:
-        if is_lock_enabled(locks_row, lock.key) and lock.detector(message):
-            try:
-                await bot.delete_message(message.chat.id, message.message_id)
-            except Exception:
-                pass
-            return True
-    return False
+def _check_locks(message: Message, locks_row: dict) -> bool:
+    """Rule 1: does this message trip any content-type lock that's ON for
+    this chat (پنل -> قفل‌ها)? See utils/locks.py for the list and for how
+    an unconfigured chat falls back to the pre-panel defaults (link+forward)."""
+    return any(is_lock_enabled(locks_row, lock.key) and lock.detector(message) for lock in LOCKS)
 
 
-async def _check_filtered_words(message: Message) -> bool:
-    """Rule 2: delete messages containing any admin-defined filtered word."""
+def _check_filtered_words(message: Message, filtered_words: list) -> bool:
+    """Rule 2: does this message contain any admin-defined filtered word?"""
+    if not filtered_words:
+        return False
     text = normalize_fa(message.text or message.caption or "")
     if not text:
         return False
-    words = await db.list_filtered_words(message.chat.id)
-    if not words:
-        return False
     lowered = text.lower()
-    for word in words:
-        if normalize_fa(word).lower() in lowered:
-            try:
-                await bot.delete_message(message.chat.id, message.message_id)
-            except Exception:
-                pass
-            return True
-    return False
+    return any(normalize_fa(word).lower() in lowered for word in filtered_words)
 
 
-async def _check_spam_rate(message: Message) -> bool:
-    """Rule 2: mute users sending too many messages too fast (per-chat threshold)."""
-    settings = await db.get_chat_settings(message.chat.id)
+async def _check_spam_rate(message: Message, settings: dict) -> bool:
+    """Rule 3: mute users sending too many messages too fast (per-chat threshold)."""
     limit = settings["spam_message_limit"]
     window = settings["spam_time_window_seconds"]
     mute_minutes = settings["spam_mute_minutes"]
@@ -104,14 +86,30 @@ async def _check_spam_rate(message: Message) -> bool:
 
 
 async def apply_normal_member_restrictions(message: Message) -> bool:
-    """Centralized entry point for ALL restrictions applied to Normal members."""
-    if await _check_locks(message):
+    """Centralized entry point for ALL restrictions applied to Normal members.
+
+    Fetches this chat's locks/filtered-words/spam-settings ONCE (cached -
+    see utils/chat_config_cache.py) instead of each rule querying the DB
+    separately, cutting this from 3 sequential DB round trips per message
+    down to ~0-1.
+    """
+    config = await chat_config_cache.get_chat_config(db, message.chat.id)
+
+    if _check_locks(message, config["locks"]):
+        try:
+            await bot.delete_message(message.chat.id, message.message_id)
+        except Exception:
+            pass
         return True
 
-    if await _check_filtered_words(message):
+    if _check_filtered_words(message, config["filtered_words"]):
+        try:
+            await bot.delete_message(message.chat.id, message.message_id)
+        except Exception:
+            pass
         return True
 
-    if await _check_spam_rate(message):
+    if await _check_spam_rate(message, config["settings"]):
         return True
 
     # <-- Add future restrictions here.

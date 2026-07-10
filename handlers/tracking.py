@@ -35,9 +35,33 @@ group's title every time someone actually joins or leaves.
 from telebot.asyncio_handler_backends import BaseMiddleware
 from telebot.types import ChatMemberUpdated, Message
 
+import time
+
 from core import bot, db
 
 IN_CHAT_STATUSES = {"member", "administrator", "restricted"}
+
+# --- Throttle for upsert_user ---
+# Previously EVERY message triggered a DB write just to keep the sender's
+# cached username/name fresh, even though that almost never actually
+# changes between messages. Skip the write if we've already upserted this
+# exact (chat, user) with the exact same profile fields within the last
+# _PROFILE_TTL seconds - this turns "1 write per message" into roughly
+# "1 write per active user per 10 minutes", which is a large share of the
+# per-message DB load in an active group.
+_PROFILE_TTL = 600
+_last_upserted: dict = {}
+
+
+async def _upsert_user_throttled(chat_id: int, user_id: int, username, first_name, last_name):
+    key = (chat_id, user_id)
+    now = time.monotonic()
+    fields = (username, first_name, last_name)
+    cached = _last_upserted.get(key)
+    if cached is not None and (now - cached[0]) < _PROFILE_TTL and cached[1] == fields:
+        return
+    await db.upsert_user(chat_id, user_id, username, first_name, last_name)
+    _last_upserted[key] = (now, fields)
 
 # {گروه} is spelled out explicitly ("به گروه X" = "to the group X") rather
 # than just "{منشن} به {گروه}" so it's unambiguous which part is the
@@ -128,9 +152,10 @@ class StatsMiddleware(BaseMiddleware):
         if message.chat.type not in ("group", "supergroup"):
             return
 
-        # 1) Keep the sender's profile info fresh.
+        # 1) Keep the sender's profile info fresh (throttled - see
+        # _upsert_user_throttled above; this runs on every single message).
         if message.from_user and not message.from_user.is_bot:
-            await db.upsert_user(
+            await _upsert_user_throttled(
                 message.chat.id,
                 message.from_user.id,
                 message.from_user.username,

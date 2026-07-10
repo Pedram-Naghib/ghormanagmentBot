@@ -23,6 +23,7 @@ from telebot.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from core import bot, db
 from handlers.help_command import send_help
 from utils.locks import LOCKS, is_lock_enabled
+from utils import chat_config_cache
 from utils.panel_auth import encode, verify_panel_callback
 from utils.permissions import is_authorized_admin
 from utils.text import normalize_trigger
@@ -229,6 +230,7 @@ async def panel_callback(call: CallbackQuery):
             locks_row = await db.get_chat_locks(chat_id)
             new_state = not is_lock_enabled(locks_row, lock_key)
             await db.set_chat_lock(chat_id, lock_key, new_state)
+            chat_config_cache.invalidate(chat_id)
         text, kb = await _locks_text_and_keyboard(chat_id, invoker_id)
         await edit(text, kb)
         return
@@ -264,6 +266,7 @@ async def panel_callback(call: CallbackQuery):
                 await db.set_goodbye_settings(chat_id, enabled=not s["goodbye_enabled"])
             elif key == "captcha":
                 await db.set_join_captcha_enabled(chat_id, not s["join_captcha_enabled"])
+            chat_config_cache.invalidate(chat_id)
         text, kb = await _settings_text_and_keyboard(chat_id, invoker_id)
         await edit(text, kb)
         return

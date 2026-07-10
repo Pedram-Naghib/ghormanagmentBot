@@ -39,6 +39,7 @@ from utils.permissions import (
     is_global_owner,
     is_group_admin,
 )
+from utils import chat_config_cache
 from utils.telegram_errors import bot_permission_error_reply
 from utils.text import matches_command, normalize_fa, normalize_trigger
 
@@ -578,6 +579,7 @@ async def set_spam_limit(message: Message):
         return
     limit = int(arg)
     await db.set_spam_limit(message.chat.id, limit)
+    chat_config_cache.invalidate(message.chat.id)
     await bot.reply_to(message, f"✅ سقف پیام مجاز این گروه روی {limit} پیام در ۳ ثانیه تنظیم شد.")
 
 
@@ -601,6 +603,7 @@ async def set_spam_mute(message: Message):
         return
     minutes = int(arg)
     await db.set_spam_mute_minutes(message.chat.id, minutes)
+    chat_config_cache.invalidate(message.chat.id)
     await bot.reply_to(message, f"✅ مدت سکوت خودکار اسپم‌کننده‌ها روی {minutes} دقیقه تنظیم شد.")
 
 
@@ -729,6 +732,7 @@ async def add_filter_word(message: Message):
         await bot.reply_to(message, "⚠️ فرمت درست: <code>افزودن کلمه فیلتر [کلمه]</code>")
         return
     await db.add_filtered_word(message.chat.id, word, added_by=message.from_user.id)
+    chat_config_cache.invalidate(message.chat.id)
     await bot.reply_to(message, f"✅ کلمهٔ «{word}» به فیلتر این گروه اضافه شد و پیام‌های حاوی آن حذف می‌شوند.")
 
 
@@ -741,6 +745,7 @@ async def remove_filter_word(message: Message):
         await bot.reply_to(message, "⚠️ فرمت درست: <code>حذف کلمه فیلتر [کلمه]</code>")
         return
     removed = await db.remove_filtered_word(message.chat.id, word)
+    chat_config_cache.invalidate(message.chat.id)
     if removed:
         await bot.reply_to(message, f"✅ کلمهٔ «{word}» از فیلتر این گروه حذف شد.")
     else:
@@ -826,6 +831,7 @@ async def set_welcome_text(message: Message):
     await db.set_welcome_settings(
         message.chat.id, text=text or None, media_file_id=media_file_id, media_type=media_type,
     )
+    chat_config_cache.invalidate(message.chat.id)
     confirmation = "✅ متن خوش‌آمدگویی این گروه به‌روزرسانی شد."
     if media_file_id:
         confirmation += " (همراه با رسانه‌ای که ریپلای کردید)"
@@ -837,6 +843,7 @@ async def clear_welcome_media(message: Message):
     if not await _require_admin(message):
         return
     await db.set_welcome_settings(message.chat.id, clear_media=True)
+    chat_config_cache.invalidate(message.chat.id)
     await bot.reply_to(message, "✅ رسانهٔ خوش‌آمدگویی حذف شد؛ از این پس فقط متن ارسال می‌شود.")
 
 
@@ -845,6 +852,7 @@ async def welcome_on(message: Message):
     if not await _require_admin(message):
         return
     await db.set_welcome_settings(message.chat.id, enabled=True)
+    chat_config_cache.invalidate(message.chat.id)
     await bot.reply_to(message, "✅ خوش‌آمدگویی برای اعضای جدید این گروه فعال شد.")
 
 
@@ -853,6 +861,7 @@ async def welcome_off(message: Message):
     if not await _require_admin(message):
         return
     await db.set_welcome_settings(message.chat.id, enabled=False)
+    chat_config_cache.invalidate(message.chat.id)
     await bot.reply_to(message, "✅ خوش‌آمدگویی برای اعضای جدید این گروه غیرفعال شد.")
 
 
@@ -868,6 +877,7 @@ async def set_goodbye_text(message: Message):
     await db.set_goodbye_settings(
         message.chat.id, text=text or None, media_file_id=media_file_id, media_type=media_type,
     )
+    chat_config_cache.invalidate(message.chat.id)
     confirmation = "✅ متن بدرود این گروه به‌روزرسانی شد."
     if media_file_id:
         confirmation += " (همراه با رسانه‌ای که ریپلای کردید)"
@@ -879,6 +889,7 @@ async def clear_goodbye_media(message: Message):
     if not await _require_admin(message):
         return
     await db.set_goodbye_settings(message.chat.id, clear_media=True)
+    chat_config_cache.invalidate(message.chat.id)
     await bot.reply_to(message, "✅ رسانهٔ بدرود حذف شد؛ از این پس فقط متن ارسال می‌شود.")
 
 
@@ -887,6 +898,7 @@ async def goodbye_on(message: Message):
     if not await _require_admin(message):
         return
     await db.set_goodbye_settings(message.chat.id, enabled=True)
+    chat_config_cache.invalidate(message.chat.id)
     await bot.reply_to(message, "✅ بدرود برای اعضایی که گروه را ترک می‌کنند فعال شد.")
 
 
@@ -895,6 +907,7 @@ async def goodbye_off(message: Message):
     if not await _require_admin(message):
         return
     await db.set_goodbye_settings(message.chat.id, enabled=False)
+    chat_config_cache.invalidate(message.chat.id)
     await bot.reply_to(message, "✅ بدرود برای اعضایی که گروه را ترک می‌کنند غیرفعال شد.")
 
 
@@ -907,6 +920,7 @@ async def captcha_on(message: Message):
     if not await _require_admin(message):
         return
     await db.set_join_captcha_enabled(message.chat.id, True)
+    chat_config_cache.invalidate(message.chat.id)
     await bot.reply_to(
         message,
         "✅ کپچای عضویت فعال شد. توجه: این ویژگی فقط برای گروه‌هایی که «تایید درخواست عضویت» "
@@ -919,6 +933,7 @@ async def captcha_off(message: Message):
     if not await _require_admin(message):
         return
     await db.set_join_captcha_enabled(message.chat.id, False)
+    chat_config_cache.invalidate(message.chat.id)
     await bot.reply_to(message, "✅ کپچای عضویت غیرفعال شد.")
 
 
