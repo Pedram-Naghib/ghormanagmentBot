@@ -79,12 +79,17 @@ def _lists_menu_keyboard(invoker_id: int) -> InlineKeyboardMarkup:
 
 async def _lists_admins_text(chat_id: int) -> str:
     owner_id = await db.get_chat_owner(chat_id)
+    owner2_ids = await db.list_users_by_role(chat_id, "owner2")
     admin_ids = await db.list_users_by_role(chat_id, "admin")
     lines = ["👑 <b>مالک و ادمین‌های این گروه</b>\n"]
     if owner_id:
-        lines.append(f"👑 مالک: {await db.get_user_display_name(chat_id, owner_id)}")
+        lines.append(f"👑 مالک اصلی: {await db.get_user_display_name(chat_id, owner_id)}")
     else:
         lines.append("مالکی برای این گروه ثبت نشده.")
+    if owner2_ids:
+        lines.append("\n👑 مالک‌های ۲:")
+        for uid in owner2_ids:
+            lines.append(f"• {await db.get_user_display_name(chat_id, uid)}")
     if admin_ids:
         lines.append("\n👮‍♂️ ادمین‌ها:")
         for uid in admin_ids:

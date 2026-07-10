@@ -71,3 +71,9 @@ MESSAGE_LOG_RETENTION_DAYS = int(os.getenv("MESSAGE_LOG_RETENTION_DAYS", 3))
 
 # --- Optional: shown as a button on /start if set ---
 SUPPORT_URL = os.getenv("SUPPORT_URL", "https://t.me/it_modi")
+
+# --- Web-based message editor (/admin/messages) ---
+# Leave both empty to disable the page entirely (returns 404) rather than
+# ever accepting a blank/guessable login.
+ADMIN_PANEL_USERNAME = os.getenv("ADMIN_PANEL_USERNAME", "")
+ADMIN_PANEL_PASSWORD = os.getenv("ADMIN_PANEL_PASSWORD", "")

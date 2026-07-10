@@ -63,11 +63,11 @@ async def _upsert_user_throttled(chat_id: int, user_id: int, username, first_nam
     await db.upsert_user(chat_id, user_id, username, first_name, last_name)
     _last_upserted[key] = (now, fields)
 
-# {گروه} is spelled out explicitly ("به گروه X" = "to the group X") rather
-# than just "{منشن} به {گروه}" so it's unambiguous which part is the
-# person's name/mention and which part is the group's name.
-DEFAULT_WELCOME_TEXT = "👋 {منشن} به گروه {گروه} خوش اومدی!"
-DEFAULT_GOODBYE_TEXT = "😢 {نام} از گروه {گروه} رفت. بدرود!"
+# Two lines by default: member's name/mention on the first line, group name
+# on the second - unambiguous at a glance, with a little humor since this
+# is the first (or last) impression someone gets of the group.
+DEFAULT_WELCOME_TEXT = "🎉 {منشن} تازه به جمع‌مون اضافه شد!\nخوش اومدی به {گروه}، امیدواریم زیاد شلوغش نکنی 😄"
+DEFAULT_GOODBYE_TEXT = "😢 {نام} گروه رو ترک کرد...\n{گروه} یک نفر ساکت‌تر شد. بدرود رفیق 👋"
 
 # Maps a Telegram content_type to the AsyncTeleBot method that (re)sends a
 # file already living on Telegram's servers via its file_id - no re-upload.

@@ -17,7 +17,9 @@ from aiohttp import web
 
 from config import BOT_TOKEN, MESSAGE_LOG_RETENTION_DAYS, WEBAPP_HOST, WEBAPP_PORT, WEBHOOK_PATH, WEBHOOK_URL
 from core import bot, db
+from utils import global_admins, messages
 from docs_page import register_docs_route
+from admin_panel_page import register_admin_panel_routes
 
 # Import handler modules so their @bot.message_handler decorators register.
 # ORDER MATTERS: pyTelegramBotAPI tests handlers in registration order and
@@ -81,10 +83,33 @@ async def _message_log_cleanup_loop():
         await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
 
 
+def _build_web_app() -> web.Application:
+    """
+    Shared aiohttp app for /docs and /admin/messages - registered
+    regardless of run mode, so these pages work the same whether you're
+    running locally (polling) or on a server (webhook). run_webhook() adds
+    ONE more route on top of this (the actual Telegram webhook endpoint).
+    """
+    app = web.Application()
+    register_docs_route(app)  # GET /docs -> full human-readable guide (see docs_page.py)
+    register_admin_panel_routes(app)  # GET/POST /admin/messages -> editable message templates
+    return app
+
+
+async def _start_web_app(app: web.Application):
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, WEBAPP_HOST, WEBAPP_PORT)
+    await site.start()
+    logger.info("Web server (docs + admin) listening on %s:%s", WEBAPP_HOST, WEBAPP_PORT)
+
+
 async def run_polling():
-    """Local development mode: long-poll Telegram for updates."""
+    """Local development mode: long-poll Telegram for updates, but still
+    serve /docs and /admin/messages on WEBAPP_PORT."""
     logger.info("Starting in POLLING mode (local development)...")
     await bot.remove_webhook()
+    await _start_web_app(_build_web_app())
     await bot.infinity_polling(skip_pending=True, allowed_updates=ALLOWED_UPDATES)
 
 
@@ -100,7 +125,7 @@ async def run_webhook():
 
     logger.info("Starting in WEBHOOK mode -> %s%s", WEBHOOK_URL, WEBHOOK_PATH)
 
-    app = web.Application()
+    app = _build_web_app()
 
     async def handle_webhook(request: web.Request):
         if request.match_info.get("token") != BOT_TOKEN:
@@ -110,16 +135,11 @@ async def run_webhook():
         return web.Response()
 
     app.router.add_post("/webhook/{token}", handle_webhook)
-    register_docs_route(app)  # GET /docs -> full human-readable guide (see docs_page.py)
 
     await bot.remove_webhook()
     await bot.set_webhook(url=f"{WEBHOOK_URL}{WEBHOOK_PATH}", allowed_updates=ALLOWED_UPDATES)
 
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, WEBAPP_HOST, WEBAPP_PORT)
-    await site.start()
-    logger.info("Webhook server listening on %s:%s", WEBAPP_HOST, WEBAPP_PORT)
+    await _start_web_app(app)
     logger.info("Full guide available at %s/docs", WEBHOOK_URL)
 
     await asyncio.Event().wait()  # keep the process alive
@@ -128,6 +148,8 @@ async def run_webhook():
 async def main():
     logger.info("Connecting to the database...")
     await db.connect()  # opens the asyncpg pool AND creates tables if missing
+    await global_admins.load(db)  # seed the in-memory ادمین کل cache (see utils/global_admins.py)
+    await messages.load(db)  # seed the in-memory editable-message cache (see utils/messages.py)
 
     bot.setup_middleware(StatsMiddleware())
     await _set_command_menu()

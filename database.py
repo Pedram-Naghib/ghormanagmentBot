@@ -231,6 +231,36 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_warnings_chat_user ON warnings (chat_id, user_id);"
             )
 
+            # --- Global Admins (ادمین کل) - BOT-WIDE, not scoped to a chat.
+            # Full access in every group, exactly like the hardcoded
+            # OWNER_USER_IDS in .env, EXCEPT these are dynamic: promoted by
+            # a Global Owner (or removed by that same promoter), so they
+            # don't require editing .env + redeploying. ---
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS global_admins (
+                    user_id BIGINT PRIMARY KEY,
+                    promoted_by BIGINT NOT NULL,
+                    promoted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+                """
+            )
+
+            # --- Editable bot message templates (see utils/messages.py) ---
+            # A MISSING row means "use the hardcoded default" - so this
+            # table only ever needs to store the messages someone actually
+            # customized, not a full copy of every string in the bot.
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bot_messages (
+                    key TEXT PRIMARY KEY,
+                    template TEXT NOT NULL,
+                    updated_by BIGINT,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+                """
+            )
+
     # ---------------------------------------------------------------- #
     # USERS / PROFILE  (all scoped per chat_id, since group_users is)
     # ---------------------------------------------------------------- #
@@ -775,3 +805,56 @@ class Database:
                 chat_id,
             )
         return [(r["user_id"], r["c"]) for r in rows]
+
+    # ---------------------------------------------------------------- #
+    # GLOBAL ADMINS (ادمین کل) - bot-wide, not scoped to a chat
+    # ---------------------------------------------------------------- #
+
+    async def add_global_admin(self, user_id: int, promoted_by: int):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO global_admins (user_id, promoted_by)
+                VALUES ($1, $2)
+                ON CONFLICT (user_id) DO UPDATE SET promoted_by = EXCLUDED.promoted_by, promoted_at = now()
+                """,
+                user_id, promoted_by,
+            )
+
+    async def remove_global_admin(self, user_id: int):
+        async with self.pool.acquire() as conn:
+            await conn.execute("DELETE FROM global_admins WHERE user_id=$1", user_id)
+
+    async def list_global_admins(self) -> List[Tuple[int, int]]:
+        """[(user_id, promoted_by), ...] for every dynamically-promoted global admin."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("SELECT user_id, promoted_by FROM global_admins")
+        return [(r["user_id"], r["promoted_by"]) for r in rows]
+
+    # ---------------------------------------------------------------- #
+    # EDITABLE MESSAGE TEMPLATES (see utils/messages.py + the /admin panel)
+    # ---------------------------------------------------------------- #
+
+    async def get_message_overrides(self) -> dict:
+        """Returns {key: template} for every message someone has customized -
+        called once at startup to seed the in-memory cache in
+        utils/messages.py, so normal message-sending never touches the DB."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("SELECT key, template FROM bot_messages")
+        return {r["key"]: r["template"] for r in rows}
+
+    async def set_message_override(self, key: str, template: str, updated_by: Optional[int] = None):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO bot_messages (key, template, updated_by)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (key) DO UPDATE SET template = EXCLUDED.template, updated_by = EXCLUDED.updated_by,
+                    updated_at = now()
+                """,
+                key, template, updated_by,
+            )
+
+    async def reset_message_override(self, key: str):
+        async with self.pool.acquire() as conn:
+            await conn.execute("DELETE FROM bot_messages WHERE key=$1", key)
