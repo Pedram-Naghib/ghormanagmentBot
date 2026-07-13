@@ -66,8 +66,8 @@ async def _locks_text_and_keyboard(chat_id: int, invoker_id: int):
     profanity_enabled = is_lock_enabled(locks_row, "profanity")
     buttons.append(
         InlineKeyboardButton(
-            "فحش", callback_data=encode(invoker_id, "locks", "toggle", "profanity"),
-            style="success" if profanity_enabled else None,
+            "فحش", style=f"{'success' if profanity_enabled else None}",
+            callback_data=encode(invoker_id, "locks", "toggle", "profanity"),
         )
     )
     kb.add(*buttons)
@@ -157,23 +157,23 @@ async def _settings_text_and_keyboard(chat_id: int, invoker_id: int):
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton(
-            f"{'✅' if s['welcome_enabled'] else '❌'} خوش‌آمدگویی",
+            "خوش‌آمدگویی", style=f"{'success' if s['welcome_enabled'] else None}",
             callback_data=encode(invoker_id, "settings", "toggle", "welcome"),
         ),
         InlineKeyboardButton(
-            f"{'✅' if s['goodbye_enabled'] else '❌'} بدرود",
+            "بدرود", f"{'success' if s['goodbye_enabled'] else None}",
             callback_data=encode(invoker_id, "settings", "toggle", "goodbye"),
         ),
     )
     kb.add(
         InlineKeyboardButton(
-            f"{'✅' if s['join_captcha_enabled'] else '❌'} کپچای عضویت",
+           "کپچای عضویت", style=f"{'success' if s['join_captcha_enabled'] else None}",
             callback_data=encode(invoker_id, "settings", "toggle", "captcha"),
         )
     )
     kb.add(
         InlineKeyboardButton(
-            f"{'✅' if s['hide_system_join_leave_messages'] else '❌'} حذف پیام سیستمی ورود/خروج",
+            "حذف پیام سیستمی ورود/خروج", style=f"{'success' if s['hide_system_join_leave_messages'] else None}",
             callback_data=encode(invoker_id, "settings", "toggle", "hide_system"),
         )
     )
