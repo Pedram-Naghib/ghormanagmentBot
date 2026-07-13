@@ -53,10 +53,11 @@ async def _locks_text_and_keyboard(chat_id: int, invoker_id: int):
     buttons = []
     for lock in LOCKS:
         enabled = is_lock_enabled(locks_row, lock.key)
-        style = "success" if enabled else None
         buttons.append(
             InlineKeyboardButton(
-                f"{lock.label}", callback_data=encode(invoker_id, "locks", "toggle", lock.key), style=style
+                lock.label,
+                callback_data=encode(invoker_id, "locks", "toggle", lock.key),
+                style="success" if enabled else "danger",
             )
         )
     # قفل فحش isn't in utils.locks.LOCKS since (unlike the others) it needs
@@ -66,8 +67,9 @@ async def _locks_text_and_keyboard(chat_id: int, invoker_id: int):
     profanity_enabled = is_lock_enabled(locks_row, "profanity")
     buttons.append(
         InlineKeyboardButton(
-            "فحش", style=f"{'success' if profanity_enabled else None}",
+            "فحش",
             callback_data=encode(invoker_id, "locks", "toggle", "profanity"),
+            style="success" if profanity_enabled else "danger",
         )
     )
     kb.add(*buttons)
@@ -157,24 +159,28 @@ async def _settings_text_and_keyboard(chat_id: int, invoker_id: int):
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton(
-            "خوش‌آمدگویی", style=f"{'success' if s['welcome_enabled'] else None}",
+            "خوش‌آمدگویی",
             callback_data=encode(invoker_id, "settings", "toggle", "welcome"),
+            style="success" if s["welcome_enabled"] else "danger",
         ),
         InlineKeyboardButton(
-            "بدرود", f"{'success' if s['goodbye_enabled'] else None}",
+            "بدرود",
             callback_data=encode(invoker_id, "settings", "toggle", "goodbye"),
+            style="success" if s["goodbye_enabled"] else "danger",
         ),
     )
     kb.add(
         InlineKeyboardButton(
-           "کپچای عضویت", style=f"{'success' if s['join_captcha_enabled'] else None}",
+            "کپچای عضویت",
             callback_data=encode(invoker_id, "settings", "toggle", "captcha"),
+            style="success" if s["join_captcha_enabled"] else "danger",
         )
     )
     kb.add(
         InlineKeyboardButton(
-            "حذف پیام سیستمی ورود/خروج", style=f"{'success' if s['hide_system_join_leave_messages'] else None}",
+            "حذف پیام سیستمی ورود/خروج",
             callback_data=encode(invoker_id, "settings", "toggle", "hide_system"),
+            style="success" if s["hide_system_join_leave_messages"] else "danger",
         )
     )
     kb.add(InlineKeyboardButton("⬅️ بازگشت", callback_data=encode(invoker_id, "main"), style="danger"))
