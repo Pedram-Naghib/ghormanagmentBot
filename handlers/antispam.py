@@ -23,6 +23,7 @@ from core import bot, db
 from utils import chat_config_cache
 from utils.locks import LOCKS, is_lock_enabled
 from utils.permissions import is_normal_member
+from utils.profanity_words import BASE_PROFANITY_WORDS
 from utils.text import normalize_fa
 
 # In-memory recent-message timestamps, per chat, per user.
@@ -49,8 +50,25 @@ def _check_filtered_words(message: Message, filtered_words: list) -> bool:
     return any(normalize_fa(word).lower() in lowered for word in filtered_words)
 
 
+def _check_profanity(message: Message, locks_row: dict, profanity_added: list, profanity_removed: list) -> bool:
+    """Rule 3: قفل فحش. OFF by default (see utils/locks.py's
+    LOCKS_DEFAULT_ON) - an admin has to turn this on from the panel first.
+    Effective word set for this chat = (BASE_PROFANITY_WORDS ∪ added) - removed
+    - see utils/profanity_words.py for the caveats on the base list and
+    handlers/admin_commands.py for افزودن/حذف فحش."""
+    if not is_lock_enabled(locks_row, "profanity"):
+        return False
+    text = normalize_fa(message.text or message.caption or "")
+    if not text:
+        return False
+    lowered = text.lower()
+    removed_normalized = {normalize_fa(w).lower() for w in profanity_removed}
+    effective_words = {normalize_fa(w).lower() for w in BASE_PROFANITY_WORDS | set(profanity_added)} - removed_normalized
+    return any(word and word in lowered for word in effective_words)
+
+
 async def _check_spam_rate(message: Message, settings: dict) -> bool:
-    """Rule 3: mute users sending too many messages too fast (per-chat threshold)."""
+    """Rule 4: mute users sending too many messages too fast (per-chat threshold)."""
     limit = settings["spam_message_limit"]
     window = settings["spam_time_window_seconds"]
     mute_minutes = settings["spam_mute_minutes"]
@@ -88,10 +106,9 @@ async def _check_spam_rate(message: Message, settings: dict) -> bool:
 async def apply_normal_member_restrictions(message: Message) -> bool:
     """Centralized entry point for ALL restrictions applied to Normal members.
 
-    Fetches this chat's locks/filtered-words/spam-settings ONCE (cached -
-    see utils/chat_config_cache.py) instead of each rule querying the DB
-    separately, cutting this from 3 sequential DB round trips per message
-    down to ~0-1.
+    Fetches this chat's locks/filtered-words/spam-settings/profanity-
+    customizations ONCE (cached - see utils/chat_config_cache.py) instead of
+    each rule querying the DB separately.
     """
     config = await chat_config_cache.get_chat_config(db, message.chat.id)
 
@@ -103,6 +120,13 @@ async def apply_normal_member_restrictions(message: Message) -> bool:
         return True
 
     if _check_filtered_words(message, config["filtered_words"]):
+        try:
+            await bot.delete_message(message.chat.id, message.message_id)
+        except Exception:
+            pass
+        return True
+
+    if _check_profanity(message, config["locks"], config["profanity_added"], config["profanity_removed"]):
         try:
             await bot.delete_message(message.chat.id, message.message_id)
         except Exception:

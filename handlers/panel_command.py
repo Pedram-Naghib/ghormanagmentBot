@@ -25,6 +25,7 @@ from handlers.help_command import send_help
 from utils.banners import is_banner_message, send_banner
 from utils.locks import LOCKS, is_lock_enabled
 from utils import chat_config_cache
+from utils.mentions import mention_by_id
 from utils.panel_auth import encode, verify_panel_callback
 from utils.permissions import is_authorized_admin
 from utils.text import normalize_trigger
@@ -58,9 +59,25 @@ async def _locks_text_and_keyboard(chat_id: int, invoker_id: int):
                 f"{lock.label}", callback_data=encode(invoker_id, "locks", "toggle", lock.key), style=style
             )
         )
+    # قفل فحش isn't in utils.locks.LOCKS since (unlike the others) it needs
+    # per-chat word customization (افزودن/حذف فحش), not just a plain
+    # detector - but it still toggles through the exact same chat_locks
+    # storage/callback path, just with a manually-added button here.
+    profanity_enabled = is_lock_enabled(locks_row, "profanity")
+    buttons.append(
+        InlineKeyboardButton(
+            "فحش", callback_data=encode(invoker_id, "locks", "toggle", "profanity"),
+            style="success" if profanity_enabled else None,
+        )
+    )
     kb.add(*buttons)
     kb.add(InlineKeyboardButton("⬅️ بازگشت", callback_data=encode(invoker_id, "main"), style="danger"))
-    text = "🔒 <b>قفل‌ها</b>\n\nروی هرکدام بزنید تا روشن/خاموش شود (فقط برای اعضای عادی اعمال می‌شود):"
+    text = (
+        "🔒 <b>قفل‌ها</b>\n\nروی هرکدام بزنید تا روشن/خاموش شود (فقط برای اعضای عادی اعمال می‌شود):\n\n"
+        "⚠️ «فحش» پیش‌فرض خاموش است و از یک دیتاست عمومی استفاده می‌کند که ممکن است گاهی کلمات "
+        "بی‌گناه را هم بگیرد - با «افزودن فحش [کلمه]» / «حذف فحش [کلمه]» می‌توانید آن را برای این "
+        "گروه سفارشی کنید."
+    )
     return text, kb
 
 
@@ -84,17 +101,20 @@ async def _lists_admins_text(chat_id: int) -> str:
     admin_ids = await db.list_users_by_role(chat_id, "admin")
     lines = ["👑 <b>مالک و ادمین‌های این گروه</b>\n"]
     if owner_id:
-        lines.append(f"👑 مالک اصلی: {await db.get_user_display_name(chat_id, owner_id)}")
+        owner_name = await db.get_user_display_name(chat_id, owner_id)
+        lines.append(f"👑 مالک اصلی: {mention_by_id(owner_id, owner_name)}")
     else:
         lines.append("مالکی برای این گروه ثبت نشده.")
     if owner2_ids:
         lines.append("\n👑 مالک‌های ۲:")
         for uid in owner2_ids:
-            lines.append(f"• {await db.get_user_display_name(chat_id, uid)}")
+            name = await db.get_user_display_name(chat_id, uid)
+            lines.append(f"• {mention_by_id(uid, name)}")
     if admin_ids:
         lines.append("\n👮‍♂️ ادمین‌ها:")
         for uid in admin_ids:
-            lines.append(f"• {await db.get_user_display_name(chat_id, uid)}")
+            name = await db.get_user_display_name(chat_id, uid)
+            lines.append(f"• {mention_by_id(uid, name)}")
     else:
         lines.append("\nادمینی (جدا از مالک) تعیین نشده.")
     return "\n".join(lines)
@@ -106,7 +126,8 @@ async def _lists_vips_text(chat_id: int) -> str:
         return "⭐️ <b>اعضای ویژه</b>\n\nعضو ویژه‌ای در این گروه ثبت نشده."
     lines = ["⭐️ <b>اعضای ویژهٔ این گروه</b>\n"]
     for uid in vip_ids:
-        lines.append(f"• {await db.get_user_display_name(chat_id, uid)}")
+        name = await db.get_user_display_name(chat_id, uid)
+        lines.append(f"• {mention_by_id(uid, name)}")
     return "\n".join(lines)
 
 
@@ -126,7 +147,8 @@ async def _lists_warnings_text(chat_id: int) -> str:
         return "⚠️ <b>اخطارها</b>\n\nهیچ کاربری اخطار فعالی ندارد."
     lines = ["⚠️ <b>اخطارهای این گروه</b>\n"]
     for uid, count in warned:
-        lines.append(f"• {await db.get_user_display_name(chat_id, uid)}: {count} از {WARN_LIMIT}")
+        name = await db.get_user_display_name(chat_id, uid)
+        lines.append(f"• {mention_by_id(uid, name)}: {count} از {WARN_LIMIT}")
     return "\n".join(lines)
 
 
@@ -149,6 +171,12 @@ async def _settings_text_and_keyboard(chat_id: int, invoker_id: int):
             callback_data=encode(invoker_id, "settings", "toggle", "captcha"),
         )
     )
+    kb.add(
+        InlineKeyboardButton(
+            f"{'✅' if s['hide_system_join_leave_messages'] else '❌'} حذف پیام سیستمی ورود/خروج",
+            callback_data=encode(invoker_id, "settings", "toggle", "hide_system"),
+        )
+    )
     kb.add(InlineKeyboardButton("⬅️ بازگشت", callback_data=encode(invoker_id, "main"), style="danger"))
     text = (
         "⚙️ <b>تنظیمات پیشرفته</b>\n\n"
@@ -160,7 +188,9 @@ async def _settings_text_and_keyboard(chat_id: int, invoker_id: int):
         "(می‌توانید روی یک عکس/ویدیو/ویس ریپلای کرده و همین دستور را بفرستید تا آن رسانه هم پیام خوش‌آمدگویی شود)\n\n"
         "کپچای عضویت: اگر گروه شما «تایید درخواست عضویت» فعال باشد، با روشن کردن این گزینه، ربات "
         "برای هرکسی که درخواست عضویت می‌دهد یک سؤال ساده در پیوی می‌فرستد؛ اگر ظرف ۱ دقیقه درست جواب "
-        "ندهد، درخواستش خودکار رد می‌شود."
+        "ندهد، درخواستش خودکار رد می‌شود.\n\n"
+        "حذف پیام سیستمی ورود/خروج: پیام‌های خودکار خودِ تلگرام («فلانی به گروه اضافه شد»/«فلانی گروه "
+        "را ترک کرد») را پاک می‌کند - جدا از خوش‌آمدگویی/بدرودِ خودِ ربات که بالاتر گفته شد. پیش‌فرض: روشن."
     )
     return text, kb
 
@@ -270,6 +300,8 @@ async def panel_callback(call: CallbackQuery):
                 await db.set_goodbye_settings(chat_id, enabled=not s["goodbye_enabled"])
             elif key == "captcha":
                 await db.set_join_captcha_enabled(chat_id, not s["join_captcha_enabled"])
+            elif key == "hide_system":
+                await db.set_hide_system_join_leave_messages(chat_id, not s["hide_system_join_leave_messages"])
             chat_config_cache.invalidate(chat_id)
         text, kb = await _settings_text_and_keyboard(chat_id, invoker_id)
         await edit(text, kb)

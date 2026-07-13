@@ -46,6 +46,7 @@ from utils.permissions import (
 )
 from utils import chat_config_cache, messages
 from utils.banners import send_banner
+from utils.mentions import mention, mention_by_id
 from utils.telegram_errors import bot_permission_error_reply
 from utils.text import matches_command, normalize_fa, normalize_trigger
 
@@ -256,10 +257,19 @@ async def ban_user(message: Message):
         return
     if await _refuse_if_protected(message, target):
         return
+
+    try:
+        member = await bot.get_chat_member(message.chat.id, target.id)
+        if member.status == "kicked":
+            await bot.reply_to(message, messages.get("ban.already_banned", name=mention(target)))
+            return
+    except Exception:
+        pass  # couldn't check status - fall through and just try the ban anyway
+
     try:
         await bot.ban_chat_member(message.chat.id, target.id)
-        funny_line = _pick_ban_announcement(target.full_name, message.chat.title or "این گروه")
-        text = messages.get("ban.success", name=target.full_name, funny_line=funny_line)
+        funny_line = _pick_ban_announcement(mention(target), message.chat.title or "این گروه")
+        text = messages.get("ban.success", name=mention(target), funny_line=funny_line)
         sent_banner = await send_banner(message.chat.id, "ban_banner", text, reply_to_message_id=message.message_id)
         if not sent_banner:
             await bot.reply_to(message, text)
@@ -307,6 +317,7 @@ async def unban_user(message: Message):
     if not target_id:
         await bot.reply_to(message, messages.get("unban.need_target"))
         return
+    target_label = mention_by_id(target_id, target_label)
 
     try:
         member = await bot.get_chat_member(message.chat.id, target_id)
@@ -359,6 +370,15 @@ async def mute_user(message: Message):
         minutes = int(parts[1])
 
     try:
+        member = await bot.get_chat_member(message.chat.id, target.id)
+        already_muted = member.status == "restricted" and not getattr(member, "can_send_messages", True)
+        if already_muted:
+            await bot.reply_to(message, messages.get("mute.already_muted", name=mention(target)))
+            return
+    except Exception:
+        pass  # couldn't check status - fall through and just try the mute anyway
+
+    try:
         if minutes:
             until = int(time.time() + minutes * 60)
             await bot.restrict_chat_member(
@@ -366,14 +386,14 @@ async def mute_user(message: Message):
                 permissions=ChatPermissions(can_send_messages=False),
                 until_date=until,
             )
-            text = messages.get("mute.timed", name=target.full_name, minutes=minutes)
+            text = messages.get("mute.timed", name=mention(target), minutes=minutes)
         else:
             # No until_date -> Telegram treats this as "forever" (until manually lifted).
             await bot.restrict_chat_member(
                 message.chat.id, target.id,
                 permissions=ChatPermissions(can_send_messages=False),
             )
-            text = messages.get("mute.forever", name=target.full_name)
+            text = messages.get("mute.forever", name=mention(target))
         sent_banner = await send_banner(message.chat.id, "mute_banner", text, reply_to_message_id=message.message_id)
         if not sent_banner:
             await bot.reply_to(message, text)
@@ -394,7 +414,7 @@ async def unmute_user(message: Message):
         member = await bot.get_chat_member(message.chat.id, target.id)
         already_can_speak = member.status != "restricted" or getattr(member, "can_send_messages", True)
         if member.status != "kicked" and already_can_speak:
-            await bot.reply_to(message, messages.get("unmute.already_speaking", name=target.full_name))
+            await bot.reply_to(message, messages.get("unmute.already_speaking", name=mention(target)))
             return
     except Exception:
         pass  # couldn't check status - fall through and just try the unmute anyway
@@ -405,7 +425,7 @@ async def unmute_user(message: Message):
         chat = await bot.get_chat(message.chat.id)
         permissions = chat.permissions or ChatPermissions(can_send_messages=True)
         await bot.restrict_chat_member(message.chat.id, target.id, permissions=permissions)
-        await bot.reply_to(message, messages.get("unmute.success", name=target.full_name))
+        await bot.reply_to(message, messages.get("unmute.success", name=mention(target)))
     except Exception as e:
         await bot.reply_to(message, bot_permission_error_reply(e))
 
@@ -426,7 +446,7 @@ async def set_vip(message: Message):
         message.chat.id, target.id, "vip",
         username=target.username, first_name=target.first_name, last_name=target.last_name,
     )
-    await bot.reply_to(message, messages.get("vip.set", name=target.full_name))
+    await bot.reply_to(message, messages.get("vip.set", name=mention(target)))
 
 
 @bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip() in UNVIP_TRIGGERS)
@@ -439,10 +459,10 @@ async def unset_vip(message: Message):
         return
     current_role = await db.get_user_role(message.chat.id, target.id)
     if current_role != "vip":
-        await bot.reply_to(message, messages.get("vip.not_vip", name=target.full_name))
+        await bot.reply_to(message, messages.get("vip.not_vip", name=mention(target)))
         return
     await db.set_user_role(message.chat.id, target.id, "normal")
-    await bot.reply_to(message, messages.get("vip.unset", name=target.full_name))
+    await bot.reply_to(message, messages.get("vip.unset", name=mention(target)))
 
 
 # ---------------------------------------------------------------- #
@@ -460,7 +480,7 @@ async def show_owner(message: Message):
         )
         return
     name = await db.get_user_display_name(message.chat.id, owner_id)
-    await bot.reply_to(message, f"👑 مالک این گروه: {name}")
+    await bot.reply_to(message, f"👑 مالک این گروه: {mention_by_id(owner_id, name)}")
 
 
 @bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip() in CLAIM_OWNER_TRIGGERS)
@@ -474,7 +494,7 @@ async def claim_owner(message: Message):
         return
     u = message.from_user
     await db.set_user_role(message.chat.id, u.id, "owner", username=u.username, first_name=u.first_name, last_name=u.last_name)
-    await bot.reply_to(message, f"👑 {u.full_name} به‌عنوان مالک این گروه ثبت شد.")
+    await bot.reply_to(message, f"👑 {mention(u)} به‌عنوان مالک این گروه ثبت شد.")
 
 
 async def _can_use_set_owner(message: Message) -> bool:
@@ -514,7 +534,7 @@ async def force_set_owner(message: Message):
         message.chat.id, target.id, "owner",
         username=target.username, first_name=target.first_name, last_name=target.last_name,
     )
-    await bot.reply_to(message, f"✅ {target.full_name} اکنون مالک اصلی این گروه است.")
+    await bot.reply_to(message, f"✅ {mention(target)} اکنون مالک اصلی این گروه است.")
 
 
 # ---------------------------------------------------------------- #
@@ -552,8 +572,7 @@ async def add_global_admin(message: Message):
         await bot.reply_to(message, "⚠️ روی پیام کاربری که می‌خواهید ادمین کل شود ریپلای کنید.")
         return
     await global_admins.add(db, target.id, promoted_by=message.from_user.id)
-    mention = f'<a href="tg://user?id={target.id}">{target.full_name}</a>'
-    await bot.reply_to(message, f"✅ {target.full_name} اکنون ادمین کل ربات است.\n\n{mention} " + GLOBAL_ADMIN_CAPABILITIES_TEXT)
+    await bot.reply_to(message, f"✅ {mention(target)} اکنون ادمین کل ربات است.\n\n{mention(target)} " + GLOBAL_ADMIN_CAPABILITIES_TEXT)
 
 
 @bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip() in REMOVE_GLOBAL_ADMIN_TRIGGERS)
@@ -563,7 +582,7 @@ async def remove_global_admin(message: Message):
         await bot.reply_to(message, "⚠️ روی پیام کاربر مورد نظر ریپلای کنید.")
         return
     if not global_admins.is_global_admin(target.id):
-        await bot.reply_to(message, f"{target.full_name} ادمین کل نیست.")
+        await bot.reply_to(message, f"{mention(target)} ادمین کل نیست.")
         return
     # Removable by a hardcoded Global Owner, OR by whoever specifically promoted this person.
     promoter_id = global_admins.get_promoter(target.id)
@@ -574,7 +593,7 @@ async def remove_global_admin(message: Message):
         )
         return
     await global_admins.remove(db, target.id)
-    await bot.reply_to(message, f"✅ دسترسی ادمین کل از {target.full_name} گرفته شد.")
+    await bot.reply_to(message, f"✅ دسترسی ادمین کل از {mention(target)} گرفته شد.")
 
 
 @bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip() in LIST_GLOBAL_ADMIN_TRIGGERS)
@@ -590,7 +609,7 @@ async def list_global_admins(message: Message):
     for uid in ids:
         name = await db.get_user_display_name(message.chat.id, uid)
         promoter = global_admins.get_promoter(uid)
-        lines.append(f"• {name} (<code>{uid}</code>) - ارتقا توسط <code>{promoter}</code>")
+        lines.append(f"• {mention_by_id(uid, name)} (<code>{uid}</code>) - ارتقا توسط <code>{promoter}</code>")
     await bot.reply_to(message, "\n".join(lines))
 
 
@@ -635,11 +654,10 @@ async def add_admin(message: Message):
         message.chat.id, target.id, "admin",
         username=target.username, first_name=target.first_name, last_name=target.last_name,
     )
-    mention = f'<a href="tg://user?id={target.id}">{target.full_name}</a>'
     await bot.reply_to(
         message,
-        f"✅ کاربر {target.full_name} اکنون ادمین این گروه است (فقط در همین گروه).\n\n"
-        f"{mention} " + ADMIN_CAPABILITIES_TEXT,
+        f"✅ کاربر {mention(target)} اکنون ادمین این گروه است (فقط در همین گروه).\n\n"
+        f"{mention(target)} " + ADMIN_CAPABILITIES_TEXT,
     )
 
 
@@ -654,10 +672,10 @@ async def remove_admin(message: Message):
         return
     current_role = await db.get_user_role(message.chat.id, target.id)
     if current_role != "admin":
-        await bot.reply_to(message, f"{target.full_name} ادمین این گروه نیست.")
+        await bot.reply_to(message, f"{mention(target)} ادمین این گروه نیست.")
         return
     await db.set_user_role(message.chat.id, target.id, "normal")
-    await bot.reply_to(message, f"✅ دسترسی ادمین این گروه از {target.full_name} گرفته شد.")
+    await bot.reply_to(message, f"✅ دسترسی ادمین این گروه از {mention(target)} گرفته شد.")
 
 
 @bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip() in ADD_OWNER2_TRIGGERS)
@@ -673,11 +691,10 @@ async def add_owner2(message: Message):
         message.chat.id, target.id, "owner2",
         username=target.username, first_name=target.first_name, last_name=target.last_name,
     )
-    mention = f'<a href="tg://user?id={target.id}">{target.full_name}</a>'
     await bot.reply_to(
         message,
-        f"✅ کاربر {target.full_name} اکنون مالک ۲ این گروه است (فقط در همین گروه).\n\n"
-        f"{mention} " + OWNER2_CAPABILITIES_TEXT,
+        f"✅ کاربر {mention(target)} اکنون مالک ۲ این گروه است (فقط در همین گروه).\n\n"
+        f"{mention(target)} " + OWNER2_CAPABILITIES_TEXT,
     )
 
 
@@ -692,10 +709,10 @@ async def remove_owner2(message: Message):
         return
     current_role = await db.get_user_role(message.chat.id, target.id)
     if current_role != "owner2":
-        await bot.reply_to(message, f"{target.full_name} مالک ۲ این گروه نیست.")
+        await bot.reply_to(message, f"{mention(target)} مالک ۲ این گروه نیست.")
         return
     await db.set_user_role(message.chat.id, target.id, "normal")
-    await bot.reply_to(message, f"✅ دسترسی مالک ۲ این گروه از {target.full_name} گرفته شد.")
+    await bot.reply_to(message, f"✅ دسترسی مالک ۲ این گروه از {mention(target)} گرفته شد.")
 
 
 @bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip() in LIST_ADMIN_TRIGGERS)
@@ -709,17 +726,17 @@ async def list_admins(message: Message):
     lines = []
     if owner_id:
         owner_name = await db.get_user_display_name(message.chat.id, owner_id)
-        lines.append(f"👑 مالک اصلی: {owner_name}")
+        lines.append(f"👑 مالک اصلی: {mention_by_id(owner_id, owner_name)}")
     if owner2_ids:
         lines.append("\n👑 <b>مالک‌های ۲ این گروه:</b>")
         for user_id in owner2_ids:
             name = await db.get_user_display_name(message.chat.id, user_id)
-            lines.append(f"• {name}")
+            lines.append(f"• {mention_by_id(user_id, name)}")
     if admin_ids:
         lines.append("\n👮‍♂️ <b>ادمین‌های این گروه:</b>")
         for user_id in admin_ids:
             name = await db.get_user_display_name(message.chat.id, user_id)
-            lines.append(f"• {name}")
+            lines.append(f"• {mention_by_id(user_id, name)}")
     else:
         lines.append("\nهیچ ادمینی (جدا از مالک) برای این گروه تعیین نشده.")
 
@@ -866,14 +883,14 @@ async def warn_user(message: Message):
             await db.clear_warnings(message.chat.id, target.id)
             await bot.reply_to(
                 message,
-                messages.get("warn.auto_ban", name=target.full_name, count=count, limit=WARN_LIMIT, reason_line=reason_line),
+                messages.get("warn.auto_ban", name=mention(target), count=count, limit=WARN_LIMIT, reason_line=reason_line),
             )
         except Exception as e:
             await bot.reply_to(message, bot_permission_error_reply(e))
     else:
         await bot.reply_to(
             message,
-            messages.get("warn.given", name=target.full_name, count=count, limit=WARN_LIMIT, reason_line=reason_line),
+            messages.get("warn.given", name=mention(target), count=count, limit=WARN_LIMIT, reason_line=reason_line),
         )
 
 
@@ -886,7 +903,7 @@ async def clear_warn(message: Message):
         await bot.reply_to(message, "⚠️ روی پیام کاربر مورد نظر ریپلای کنید.")
         return
     await db.clear_warnings(message.chat.id, target.id)
-    await bot.reply_to(message, messages.get("warn.cleared", name=target.full_name))
+    await bot.reply_to(message, messages.get("warn.cleared", name=mention(target)))
 
 
 @bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip() in LIST_WARN_TRIGGERS)
@@ -900,7 +917,7 @@ async def list_warn(message: Message):
     lines = ["⚠️ <b>لیست اخطارهای این گروه:</b>"]
     for user_id, count in warned:
         name = await db.get_user_display_name(message.chat.id, user_id)
-        lines.append(f"• {name}: {count} از {WARN_LIMIT}")
+        lines.append(f"• {mention_by_id(user_id, name)}: {count} از {WARN_LIMIT}")
     await bot.reply_to(message, "\n".join(lines))
 
 
@@ -947,6 +964,69 @@ async def list_filter_words(message: Message):
         await bot.reply_to(message, "هیچ کلمه‌ای در فیلتر این گروه ثبت نشده.")
         return
     await bot.reply_to(message, "🔒 <b>کلمات فیلتر این گروه:</b>\n" + "\n".join(f"• {w}" for w in words))
+
+
+# ---------------------------------------------------------------- #
+# قفل فحش (profanity lock) — OFF by default, toggled from پنل → قفل‌ها.
+# The base word list is static (utils/profanity_words.py); these commands
+# only manage THIS chat's customizations on top of it - adding extra words,
+# or whitelisting/removing base-list words that cause false positives.
+# ---------------------------------------------------------------- #
+
+ADD_PROFANITY_PREFIX = "افزودن فحش"
+REMOVE_PROFANITY_PREFIX = "حذف فحش"
+LIST_PROFANITY_TRIGGERS = {"لیست فحش"}
+
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip().startswith(ADD_PROFANITY_PREFIX))
+async def add_profanity_word(message: Message):
+    if not await _require_admin(message):
+        return
+    word = _norm(message)[len(ADD_PROFANITY_PREFIX):].strip()
+    if not word:
+        await bot.reply_to(message, "⚠️ فرمت درست: <code>افزودن فحش [کلمه]</code>")
+        return
+    await db.add_profanity_word(message.chat.id, word, added_by=message.from_user.id)
+    chat_config_cache.invalidate(message.chat.id)
+    await bot.reply_to(
+        message,
+        f"✅ «{word}» به لیست فحش این گروه اضافه شد.\n"
+        "توجه: قفل فحش باید از پنل روشن باشد تا این لیست عملاً اعمال شود.",
+    )
+
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip().startswith(REMOVE_PROFANITY_PREFIX))
+async def remove_profanity_word(message: Message):
+    if not await _require_admin(message):
+        return
+    word = _norm(message)[len(REMOVE_PROFANITY_PREFIX):].strip()
+    if not word:
+        await bot.reply_to(message, "⚠️ فرمت درست: <code>حذف فحش [کلمه]</code>")
+        return
+    await db.remove_profanity_word(message.chat.id, word, removed_by=message.from_user.id)
+    chat_config_cache.invalidate(message.chat.id)
+    await bot.reply_to(
+        message,
+        f"✅ «{word}» دیگر برای این گروه فحش محسوب نمی‌شود "
+        "(چه از لیست پایه بوده باشد، چه اضافه‌شدهٔ خودتان).",
+    )
+
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip() in LIST_PROFANITY_TRIGGERS)
+async def list_profanity_words(message: Message):
+    if not await _require_admin(message):
+        return
+    custom = await db.get_profanity_customizations(message.chat.id)
+    lines = ["🔒 <b>سفارشی‌سازی فحش این گروه</b> (لیست پایه که خودکار مسدود است را شامل نمی‌شود):\n"]
+    if custom["added"]:
+        lines.append("➕ کلمات اضافه‌شده:")
+        lines.extend(f"• {w}" for w in custom["added"])
+    if custom["removed"]:
+        lines.append("\n➖ کلمات مجاز‌شده (استثنا از لیست پایه):")
+        lines.extend(f"• {w}" for w in custom["removed"])
+    if not custom["added"] and not custom["removed"]:
+        lines.append("هنوز هیچ سفارشی‌سازی‌ای برای این گروه ثبت نشده - فقط لیست پایه فعال است.")
+    await bot.reply_to(message, "\n".join(lines))
 
 
 # ---------------------------------------------------------------- #
@@ -1124,6 +1204,31 @@ async def captcha_off(message: Message):
 
 
 # ---------------------------------------------------------------- #
+# حذف پیام سیستمی ورود/خروج — Telegram's own "X joined"/"X left" service
+# messages (distinct from our welcome/goodbye messages - see
+# handlers/tracking.py's on_new_chat_members/on_left_chat_member).
+# Default ON.
+# ---------------------------------------------------------------- #
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip() in {"روشن کردن حذف پیام سیستمی"})
+async def hide_system_messages_on(message: Message):
+    if not await _require_admin(message):
+        return
+    await db.set_hide_system_join_leave_messages(message.chat.id, True)
+    chat_config_cache.invalidate(message.chat.id)
+    await bot.reply_to(message, "✅ پیام‌های سیستمی ورود/خروج تلگرام از این پس حذف می‌شوند.")
+
+
+@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip() in {"خاموش کردن حذف پیام سیستمی"})
+async def hide_system_messages_off(message: Message):
+    if not await _require_admin(message):
+        return
+    await db.set_hide_system_join_leave_messages(message.chat.id, False)
+    chat_config_cache.invalidate(message.chat.id)
+    await bot.reply_to(message, "✅ پیام‌های سیستمی ورود/خروج تلگرام دیگر حذف نمی‌شوند.")
+
+
+# ---------------------------------------------------------------- #
 # PING — simple liveness check, open to everyone (no admin gate needed)
 # ---------------------------------------------------------------- #
 
@@ -1175,7 +1280,7 @@ async def configure_admins_from_telegram(message: Message):
             message.chat.id, user.id, "admin",
             username=user.username, first_name=user.first_name, last_name=user.last_name,
         )
-        added.append(user.full_name if hasattr(user, "full_name") else (user.first_name or str(user.id)))
+        added.append(mention(user))
 
     if not added:
         await bot.reply_to(message, "هیچ ادمین تلگرامی (به‌جز مالک گروه) برای افزودن پیدا نشد.")

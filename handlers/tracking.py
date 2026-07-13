@@ -142,6 +142,21 @@ async def _send_goodbye(message: Message):
     )
 
 
+async def _maybe_delete_system_message(message: Message):
+    """Deletes Telegram's OWN "X joined"/"X left" service message (the
+    grey text bubble, not our welcome/goodbye message) if this chat has
+    that toggle on. Same code path covers bans/kicks too - Telegram doesn't
+    have a distinct "banned" service message, a kicked user just shows up
+    as having "left" like anyone who left on their own."""
+    settings = await db.get_chat_settings(message.chat.id)
+    if not settings["hide_system_join_leave_messages"]:
+        return
+    try:
+        await bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass  # bot probably isn't admin / lacks delete rights - nothing else to do here
+
+
 class StatsMiddleware(BaseMiddleware):
     def __init__(self):
         super().__init__()
@@ -179,10 +194,12 @@ class StatsMiddleware(BaseMiddleware):
                 if adder_id:
                     await db.log_member_added(message.chat.id, adder_id, new_member.id)
             await _send_welcome(message)
+            await _maybe_delete_system_message(message)
 
         # 3) Someone left -> say goodbye.
         elif message.left_chat_member:
             await _send_goodbye(message)
+            await _maybe_delete_system_message(message)
 
         # 4) A regular message (not a join/leave service message) -> count it.
         elif message.from_user and not message.from_user.is_bot:
@@ -211,9 +228,10 @@ async def on_bot_added_to_chat(update: ChatMemberUpdated):
             last_name=update.from_user.last_name,
         )
         try:
+            mention = f'<a href="tg://user?id={update.from_user.id}">{update.from_user.full_name}</a>'
             await bot.send_message(
                 update.chat.id,
-                f"👑 {update.from_user.full_name} من رو به این گروه اضافه کرد و "
+                f"👑 {mention} من رو به این گروه اضافه کرد و "
                 f"به‌عنوان <b>مالک این گروه</b> ثبت شد؛ یعنی دسترسی کامل به همهٔ "
                 f"دستورات مدیریتی ربات رو (فقط در همین گروه) داره و می‌تونه "
                 f"ادمین و عضو ویژه هم تعیین کنه.\n\n"

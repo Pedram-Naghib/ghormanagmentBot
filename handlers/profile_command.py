@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from telebot.types import Message
 
 from core import bot, db
+from utils.mentions import mention
 from utils.permissions import is_authorized_admin
 from utils.text import normalize_trigger
 
@@ -64,7 +65,7 @@ async def show_profile(message: Message):
 
     caption = (
         f"👤 <b>پروفایل کاربر</b>\n\n"
-        f"نام: {full_name}\n"
+        f"نام: {mention(target) if full_name != '-' else full_name}\n"
         f"آیدی عددی: <code>{target.id}</code>\n"
         f"{username_line}"
         f"سطح دسترسی در این گروه: {role_label}\n"

@@ -192,6 +192,9 @@ class Database:
             await conn.execute(
                 "ALTER TABLE chat_settings ADD COLUMN IF NOT EXISTS join_captcha_enabled BOOLEAN NOT NULL DEFAULT FALSE;"
             )
+            await conn.execute(
+                "ALTER TABLE chat_settings ADD COLUMN IF NOT EXISTS hide_system_join_leave_messages BOOLEAN NOT NULL DEFAULT TRUE;"
+            )
 
             # --- Per-chat content-type locks (پنل -> قفل‌ها). Unknown/missing
             # keys fall back to DEFAULT_LOCK_STATE below, so adding a brand
@@ -215,6 +218,34 @@ class Database:
                     word TEXT NOT NULL,
                     added_by BIGINT,
                     added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    PRIMARY KEY (chat_id, word)
+                );
+                """
+            )
+
+            # --- قفل فحش (profanity lock) customization. The base word list
+            # itself is static, in utils/profanity_words.py, NOT in the DB -
+            # only each chat's ADDITIONS to and WHITELISTING (removals) from
+            # that base list are stored here. See utils/locks.py's
+            # get_effective_profanity_words(). ---
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS profanity_custom_words (
+                    chat_id BIGINT NOT NULL,
+                    word TEXT NOT NULL,
+                    added_by BIGINT,
+                    added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    PRIMARY KEY (chat_id, word)
+                );
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS profanity_removed_words (
+                    chat_id BIGINT NOT NULL,
+                    word TEXT NOT NULL,
+                    removed_by BIGINT,
+                    removed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                     PRIMARY KEY (chat_id, word)
                 );
                 """
@@ -571,6 +602,7 @@ class Database:
                 "goodbye_media_file_id": row["goodbye_media_file_id"],
                 "goodbye_media_type": row["goodbye_media_type"],
                 "join_captcha_enabled": row["join_captcha_enabled"],
+                "hide_system_join_leave_messages": row["hide_system_join_leave_messages"],
             }
         return {
             "spam_message_limit": DEFAULT_SPAM_MESSAGE_LIMIT,
@@ -585,6 +617,7 @@ class Database:
             "goodbye_media_file_id": None,
             "goodbye_media_type": None,
             "join_captcha_enabled": False,
+            "hide_system_join_leave_messages": True,
         }
 
     async def _ensure_chat_settings_row(self, conn, chat_id: int):
@@ -674,6 +707,13 @@ class Database:
             await self._ensure_chat_settings_row(conn, chat_id)
             await conn.execute(
                 "UPDATE chat_settings SET join_captcha_enabled=$2 WHERE chat_id=$1", chat_id, enabled
+            )
+
+    async def set_hide_system_join_leave_messages(self, chat_id: int, enabled: bool):
+        async with self.pool.acquire() as conn:
+            await self._ensure_chat_settings_row(conn, chat_id)
+            await conn.execute(
+                "UPDATE chat_settings SET hide_system_join_leave_messages=$2 WHERE chat_id=$1", chat_id, enabled
             )
 
     async def set_chat_settings(
@@ -871,3 +911,55 @@ class Database:
     async def reset_message_override(self, key: str):
         async with self.pool.acquire() as conn:
             await conn.execute("DELETE FROM bot_messages WHERE key=$1", key)
+
+    # ---------------------------------------------------------------- #
+    # قفل فحش customization (base list lives in utils/profanity_words.py,
+    # this table only stores what THIS chat added or whitelisted)
+    # ---------------------------------------------------------------- #
+
+    async def add_profanity_word(self, chat_id: int, word: str, added_by: Optional[int] = None):
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    INSERT INTO profanity_custom_words (chat_id, word, added_by)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (chat_id, word) DO NOTHING
+                    """,
+                    chat_id, word, added_by,
+                )
+                # Re-adding a word un-whitelists it, in case it was previously removed.
+                await conn.execute(
+                    "DELETE FROM profanity_removed_words WHERE chat_id=$1 AND word=$2", chat_id, word
+                )
+
+    async def remove_profanity_word(self, chat_id: int, word: str, removed_by: Optional[int] = None):
+        """Suppresses `word` for this chat regardless of whether it came
+        from the base list or was a custom addition - deletes it from
+        custom additions (if present) AND whitelists it against the base
+        list (harmless no-op if it wasn't a base word)."""
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "DELETE FROM profanity_custom_words WHERE chat_id=$1 AND word=$2", chat_id, word
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO profanity_removed_words (chat_id, word, removed_by)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (chat_id, word) DO NOTHING
+                    """,
+                    chat_id, word, removed_by,
+                )
+
+    async def get_profanity_customizations(self, chat_id: int) -> dict:
+        """Returns {"added": [...], "removed": [...]} - THIS chat's
+        customizations only, not the (much larger) base list."""
+        async with self.pool.acquire() as conn:
+            added_rows = await conn.fetch(
+                "SELECT word FROM profanity_custom_words WHERE chat_id=$1 ORDER BY added_at", chat_id
+            )
+            removed_rows = await conn.fetch(
+                "SELECT word FROM profanity_removed_words WHERE chat_id=$1 ORDER BY removed_at", chat_id
+            )
+        return {"added": [r["word"] for r in added_rows], "removed": [r["word"] for r in removed_rows]}

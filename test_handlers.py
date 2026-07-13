@@ -46,6 +46,8 @@ DB_METHODS = [
     "cleanup_old_message_logs", "get_recently_joined_members", "get_top_adders",
     "get_top_message_senders", "get_recent_message_ids", "get_all_logged_message_ids",
     "delete_logged_messages", "get_asset", "set_asset",
+    "add_profanity_word", "remove_profanity_word", "get_profanity_customizations",
+    "set_hide_system_join_leave_messages",
 ]
 
 for m in BOT_METHODS:
@@ -519,6 +521,117 @@ async def test_handler_modules_are_not_swapped():
     check("panel_command_module_has_open_panel", hasattr(panel_command, "open_panel"))
 
 
+# ---------------------------------------------------------------- #
+# 15) Idempotent ban/mute: already-banned/already-muted targets get told
+#     so instead of the bot silently re-applying (or erroring on) the action
+# ---------------------------------------------------------------- #
+async def test_ban_already_banned():
+    await reset()
+    admin = user(1)
+    target = user(20, first="Already")
+    core.db.get_user_role.side_effect = lambda chat_id, uid: "owner" if uid == 1 else "normal"
+    core.bot.get_chat_member.return_value = SimpleNamespace(status="kicked")
+    msg = message(from_user=admin, text="بن", reply_to_message=message(from_user=target))
+    await admin_commands.ban_user(msg)
+    reply_text = core.bot.reply_to.await_args.args[1]
+    check("ban_already_banned_explains", "قبل بن است" in reply_text, reply_text)
+    check("ban_already_banned_no_api_call", not core.bot.ban_chat_member.called)
+
+
+async def test_mute_already_muted():
+    await reset()
+    admin = user(1)
+    target = user(21, first="Quiet")
+    core.db.get_user_role.side_effect = lambda chat_id, uid: "owner" if uid == 1 else "normal"
+    core.bot.get_chat_member.return_value = SimpleNamespace(status="restricted", can_send_messages=False)
+    msg = message(from_user=admin, text="میوت", reply_to_message=message(from_user=target))
+    await admin_commands.mute_user(msg)
+    reply_text = core.bot.reply_to.await_args.args[1]
+    check("mute_already_muted_explains", "قبل سکوت است" in reply_text, reply_text)
+    check("mute_already_muted_no_api_call", not core.bot.restrict_chat_member.called)
+
+
+# ---------------------------------------------------------------- #
+# 16) قفل فحش: off by default, deletes only when explicitly enabled,
+#     and per-chat customization (add/remove) actually changes the outcome
+# ---------------------------------------------------------------- #
+async def test_profanity_lock():
+    from handlers import antispam
+    from utils import chat_config_cache
+
+    # Off by default (not in chat_locks row at all) -> no deletion even for a base-list word
+    await reset()
+    chat_id = 9101
+    chat_config_cache.invalidate(chat_id)
+    core.db.get_chat_locks.return_value = {}
+    core.db.list_filtered_words.return_value = []
+    core.db.get_profanity_customizations.return_value = {"added": [], "removed": []}
+    core.db.get_chat_settings.return_value = {"spam_message_limit": 999, "spam_time_window_seconds": 3, "spam_mute_minutes": 30}
+    msg = message(chat_id=chat_id, from_user=user(30), text="تو خیلی احمق هستی")
+    msg.content_type = "text"
+    result = await antispam.apply_normal_member_restrictions(msg)
+    check("profanity_off_by_default", result is False and not core.bot.delete_message.called)
+
+    # On -> base-list word gets deleted
+    await reset()
+    chat_id2 = 9102
+    chat_config_cache.invalidate(chat_id2)
+    core.db.get_chat_locks.return_value = {"profanity": True}
+    core.db.list_filtered_words.return_value = []
+    core.db.get_profanity_customizations.return_value = {"added": [], "removed": []}
+    core.db.get_chat_settings.return_value = {"spam_message_limit": 999, "spam_time_window_seconds": 3, "spam_mute_minutes": 30}
+    msg2 = message(chat_id=chat_id2, from_user=user(31), text="تو خیلی احمق هستی")
+    msg2.content_type = "text"
+    result2 = await antispam.apply_normal_member_restrictions(msg2)
+    check("profanity_on_deletes_base_word", result2 is True and core.bot.delete_message.await_args is not None)
+
+    # On, but chat whitelisted that specific word -> no longer deleted
+    await reset()
+    chat_id3 = 9103
+    chat_config_cache.invalidate(chat_id3)
+    core.db.get_chat_locks.return_value = {"profanity": True}
+    core.db.list_filtered_words.return_value = []
+    core.db.get_profanity_customizations.return_value = {"added": [], "removed": ["احمق"]}
+    core.db.get_chat_settings.return_value = {"spam_message_limit": 999, "spam_time_window_seconds": 3, "spam_mute_minutes": 30}
+    msg3 = message(chat_id=chat_id3, from_user=user(32), text="تو خیلی احمق هستی")
+    msg3.content_type = "text"
+    result3 = await antispam.apply_normal_member_restrictions(msg3)
+    check("profanity_whitelisted_word_ignored", result3 is False and not core.bot.delete_message.called)
+
+    # On, chat added a custom (non-base) word -> gets deleted too
+    await reset()
+    chat_id4 = 9104
+    chat_config_cache.invalidate(chat_id4)
+    core.db.get_chat_locks.return_value = {"profanity": True}
+    core.db.list_filtered_words.return_value = []
+    core.db.get_profanity_customizations.return_value = {"added": ["فلانفلان"], "removed": []}
+    core.db.get_chat_settings.return_value = {"spam_message_limit": 999, "spam_time_window_seconds": 3, "spam_mute_minutes": 30}
+    msg4 = message(chat_id=chat_id4, from_user=user(33), text="فلانفلان بودی تو")
+    msg4.content_type = "text"
+    result4 = await antispam.apply_normal_member_restrictions(msg4)
+    check("profanity_custom_added_word_deletes", result4 is True and core.bot.delete_message.await_args is not None)
+
+
+# ---------------------------------------------------------------- #
+# 17) Native Telegram join/leave service message gets deleted only when
+#     the per-chat toggle is on
+# ---------------------------------------------------------------- #
+async def test_hide_system_join_leave_messages():
+    from handlers import tracking
+
+    await reset()
+    core.db.get_chat_settings.return_value = {"hide_system_join_leave_messages": True}
+    msg = message(from_user=user(1), text="")
+    msg.message_id = 555
+    await tracking._maybe_delete_system_message(msg)
+    check("system_message_deleted_when_enabled", core.bot.delete_message.await_args == ((100, 555),) or core.bot.delete_message.await_args.args == (100, 555))
+
+    await reset()
+    core.db.get_chat_settings.return_value = {"hide_system_join_leave_messages": False}
+    await tracking._maybe_delete_system_message(msg)
+    check("system_message_kept_when_disabled", not core.bot.delete_message.called)
+
+
 async def main():
     tests = [
         test_ban_denied_explains,
@@ -541,6 +654,10 @@ async def main():
         test_set_image_accepts_gif_and_video,
         test_send_banner_helper_directly,
         test_handler_modules_are_not_swapped,
+        test_ban_already_banned,
+        test_mute_already_muted,
+        test_profanity_lock,
+        test_hide_system_join_leave_messages,
     ]
     for t in tests:
         try:
