@@ -179,6 +179,13 @@ class StatsMiddleware(BaseMiddleware):
             )
 
         # 2) New members joined -> credit whoever added them + welcome them.
+        #    NOTE: when someone joins via an invite link on their own (no
+        #    admin approval step), Telegram still sets message.from_user to
+        #    that SAME joining user - it's just how the service message is
+        #    attributed, not an indication that anyone "added" them. Only
+        #    count it as an add when the actor differs from the joiner,
+        #    otherwise self-joiners wrongly show up in «برترین‌ها در افزودن
+        #    عضو» despite never having added anyone.
         if message.new_chat_members:
             adder_id = message.from_user.id if message.from_user else None
             for new_member in message.new_chat_members:
@@ -191,7 +198,7 @@ class StatsMiddleware(BaseMiddleware):
                     new_member.first_name,
                     new_member.last_name,
                 )
-                if adder_id:
+                if adder_id and adder_id != new_member.id:
                     await db.log_member_added(message.chat.id, adder_id, new_member.id)
             await _send_welcome(message)
             await _maybe_delete_system_message(message)

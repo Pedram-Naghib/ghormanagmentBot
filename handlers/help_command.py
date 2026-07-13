@@ -24,11 +24,13 @@ still has to be caught.
 does whenever a feature changes. ***
 """
 
+from telebot.formatting import hcite
 from telebot.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from core import bot
 from utils.banners import is_banner_message, send_banner
 from utils.invoker_lock import encode, verify
+from utils.panel_auth import encode as panel_encode
 from utils.text import normalize_trigger
 
 NAMESPACE = "help"
@@ -42,23 +44,20 @@ SECTIONS = {
     "access": {
         "label": "👑 سطوح دسترسی",
         "text": (
-            "👑 <b>سطوح دسترسی</b> (هر گروه، مستقل از گروه‌های دیگر)\n\n"
-            "• <b>مالک ربات (Global Owner)</b>: در تنظیمات سرور ربات مشخص می‌شود؛ در همهٔ "
-            "گروه‌ها همیشه دسترسی کامل دارد و بالاتر از همه است.\n"
-            "• <b>مالک اصلی</b>: کسی که ربات را به یک گروه اضافه کرده. به‌طور خودکار "
-            "ثبت می‌شود؛ دسترسی کامل و می‌تواند هرکسی (مالک ۲، ادمین، ویژه) را عزل کند.\n"
-            "• <b>مالک ۲</b>: توسط مالک اصلی تعیین می‌شود؛ دسترسی کامل مثل ادمین، به‌علاوهٔ "
-            "توانایی افزودن/عزل ادمین و ویژه - اما نمی‌تواند مالک ۲ دیگر یا مالک اصلی را عزل کند.\n"
-            "• <b>ادمین گروه</b>: توسط مالک اصلی یا مالک ۲ تعیین می‌شود؛ دسترسی مدیریتی کامل، "
-            "اما فقط می‌تواند اعضای ویژه را عزل کند.\n"
-            "• <b>عضو ویژه (VIP)</b>: فقط در همان گروه از محدودیت‌های ضد اسپم معاف است.\n"
+            "👑 <b>سطوح دسترسی</b> (هر گروه، مستقل از بقیه)\n\n"
+            "• <b>مالک ربات</b>: در تنظیمات سرور مشخص می‌شود؛ در همهٔ گروه‌ها دسترسی کامل و بالاتر از همه.\n"
+            "• <b>مالک اصلی</b>: کسی که ربات را اضافه کرده؛ خودکار ثبت می‌شود، دسترسی کامل، می‌تواند همه را عزل کند.\n"
+            "• <b>مالک ۲</b>: توسط مالک اصلی تعیین می‌شود؛ مثل ادمین به‌علاوهٔ افزودن/عزل ادمین و ویژه - "
+            "اما نمی‌تواند مالک ۲ دیگر یا مالک اصلی را عزل کند.\n"
+            "• <b>ادمین گروه</b>: توسط مالک اصلی/۲ تعیین می‌شود؛ دسترسی کامل، فقط ویژه‌ها را می‌تواند عزل کند.\n"
+            "• <b>عضو ویژه (VIP)</b>: فقط از محدودیت‌های ضد اسپم معاف است.\n"
             "• <b>عضو عادی</b>: مشمول همهٔ محدودیت‌ها و قفل‌ها.\n\n"
-            "ℹ️ هر سطح فقط می‌تواند کسی را عزل/بن/سکوت کند که رتبه‌اش پایین‌تر باشد - یعنی "
-            "ادمین نمی‌تواند روی ادمین یا مالک ۲ دیگر این کار را انجام دهد، و مالک ۲ نمی‌تواند "
-            "روی مالک ۲ دیگر یا مالک اصلی.\n"
-            "ادمین بودن در خودِ تلگرام به‌تنهایی دسترسی به دستورات ربات نمی‌دهد.\n"
-            "اگر عضو عادی دستوری مخصوص ادمین‌ها را اجرا کند، ربات دلیلش را توضیح می‌دهد، "
-            "نه اینکه ساکت بماند."
+            + hcite(
+                "هر سطح فقط می‌تواند کسی با رتبهٔ پایین‌تر را عزل/بن/سکوت کند. ادمین بودن در خودِ تلگرام "
+                "به‌تنهایی دسترسی به دستورات ربات نمی‌دهد؛ اگر عضو عادی دستور مخصوص ادمین‌ها بزند، ربات "
+                "دلیلش را توضیح می‌دهد.",
+                escape=False,
+            )
         ),
     },
     "panel": {
@@ -77,25 +76,24 @@ SECTIONS = {
     "commands": {
         "label": "👮‍♂️ دستورات مدیریتی",
         "text": (
-            "👮‍♂️ <b>دستورات مدیریتی</b>\n"
-            "(روی پیام کاربر مورد نظر ریپلای کنید. برای کپی کردن یک دستور، فقط کافیست "
-            "روی متنش بزنید)\n\n"
-            "• <code>کیک</code> / <code>بن</code> / <code>اخراج</code> / <code>سیک</code> → "
-            "اخراج و بن (یا <code>بن @username</code>)\n"
-            "• <code>رفع بن</code> / <code>آنبن</code> → خروج از بن (یا <code>رفع بن @username</code>)\n"
-            "• <code>میوت</code> / <code>سکوت</code> → سکوت تا زمانی که «رفع سکوت» شود\n"
-            "• <code>میوت 10</code> → سکوت فقط برای ۱۰ دقیقه (عدد دلخواه)\n"
-            "• <code>رفع سکوت</code> / <code>آنمیوت</code> → برداشتن سکوت\n"
-            "• <code>تنظیم ویژه</code> / <code>لغو ویژه</code> → عضو ویژه کردن/برداشتن\n"
-            "• <code>اخطار</code> (ریپلای) یا <code>اخطار @username</code> → اخطار؛ پس از ۳ اخطار بن خودکار\n"
-            "• <code>حذف اخطار</code> یا <code>لیست اخطار</code>\n"
+            "👮‍♂️ <b>دستورات مدیریتی</b> (روی پیام کاربر ریپلای کنید؛ برای کپی کردن یک دستور، روی متنش بزنید)\n\n"
+            "• <code>کیک</code> / <code>بن</code> / <code>اخراج</code> / <code>سیک</code> → اخراج و بن "
+            "(یا <code>بن @username</code>)\n"
+            "• <code>رفع بن</code> / <code>آنبن</code> → خروج از بن\n"
+            "• <code>میوت</code> / <code>سکوت</code> → سکوت تا «رفع سکوت»\n"
+            "• <code>میوت 10</code> → سکوت فقط ۱۰ دقیقه (عدد دلخواه)\n"
+            "• <code>رفع سکوت</code> / <code>آنمیوت</code>\n"
+            "• <code>تنظیم ویژه</code> / <code>لغو ویژه</code>\n"
+            "• <code>اخطار</code> (ریپلای/@username) → پس از ۳ اخطار بن خودکار\n"
+            "• <code>حذف اخطار</code> / <code>لیست اخطار</code>\n"
             "• <code>افزودن کلمه فیلتر [کلمه]</code> / <code>حذف کلمه فیلتر [کلمه]</code> / "
-            "<code>لیست کلمات فیلتر</code> → پیام‌های عادی حاوی این کلمات خودکار حذف می‌شوند "
-            "(جدا از «قفل فحش» در بخش ضد اسپم - این دو سیستم لیست کلمه به اشتراک نمی‌گذارند)\n"
+            "<code>لیست کلمات فیلتر</code> → حذف خودکار پیام‌های حاوی این کلمات (جدا از «قفل فحش»)\n"
             "• <code>پینگ</code> → بررسی زنده بودن ربات\n\n"
-            "⚠️ توجه: این دستورات فقط با متن دقیقاً همان کلمه (یا فرمت‌های ثابت بالا) کار "
-            "می‌کنند - مثلاً نوشتن «بن شدم» در یک جمله عادی هیچ اقدامی انجام نمی‌دهد.\n\n"
-            "وقتی کسی ادمین می‌شود، ربات لیست کامل قابلیت‌هایی که برایش باز شده را برایش توضیح می‌دهد."
+            + hcite(
+                "این دستورات فقط با متن دقیقاً همان کلمه کار می‌کنند - «بن شدم» در یک جمله عادی هیچ "
+                "اقدامی انجام نمی‌دهد. وقتی کسی ادمین می‌شود، ربات لیست کامل قابلیت‌هایش را برایش توضیح می‌دهد.",
+                escape=False,
+            )
         ),
     },
     "ownership": {
@@ -103,21 +101,17 @@ SECTIONS = {
         "text": (
             "🛠 <b>مالکیت و ادمین‌های گروه</b>\n\n"
             "• <code>مالک این گروه</code> → نمایش مالک فعلی\n"
-            "• <code>ادعای مالکیت</code> → برای گروه‌هایی که مالک ثبت‌شده ندارند\n"
-            "• <code>تنظیم مالک</code> (ریپلای) → واگذاری مالکیت اصلی گروه به شخص دیگر "
-            "(مالک قبلی خودکار به عادی برمی‌گردد) - مالک ربات/ادمین کل هر گروهی، یا مالک اصلی "
-            "خودِ همین گروه برای واگذاری مالکیت خودش\n"
+            "• <code>ادعای مالکیت</code> → برای گروه‌های بدون مالک ثبت‌شده\n"
+            "• <code>تنظیم مالک</code> (ریپلای) → واگذاری مالکیت اصلی (مالک قبلی خودکار عادی می‌شود) - "
+            "توسط مالک ربات/ادمین کل، یا مالک اصلی برای واگذاری مالکیت خودش\n"
             "• <code>افزودن مالک دو</code> / <code>حذف مالک دو</code> (ریپلای، فقط مالک اصلی)\n"
             "• <code>افزودن ادمین گروه</code> / <code>حذف ادمین گروه</code> (ریپلای، مالک اصلی یا مالک ۲)\n"
             "• <code>لیست ادمین های گروه</code> → مالک اصلی، مالک‌های ۲ و ادمین‌ها\n"
-            "• <code>پیکربندی</code> (فقط مالک گروه) → همهٔ ادمین‌های واقعی تلگرام این گروه را "
-            "به‌عنوان ادمین ربات اضافه می‌کند\n"
-            "• <code>پاک سازی</code> (فقط مالک گروه) → همهٔ ادمین‌های ربات را از این گروه حذف "
-            "می‌کند (مالک گروه دست‌نخورده می‌ماند)\n\n"
-            "🔓 <b>ادمین کل (سراسری، نه مخصوص یک گروه):</b>\n"
-            "• <code>افزودن ادمین کل</code> (ریپلای، فقط مالک ربات) → دسترسی کامل در «همهٔ» "
-            "گروه‌ها، دقیقاً مثل مالک ربات\n"
-            "• <code>حذف ادمین کل</code> (مالک ربات، یا همان کسی که این فرد را ارتقا داده)\n"
+            "• <code>پیکربندی</code> (فقط مالک گروه) → همهٔ ادمین‌های واقعی تلگرام را ادمین ربات می‌کند\n"
+            "• <code>پاک سازی</code> (فقط مالک گروه) → همهٔ ادمین‌های ربات را حذف می‌کند (مالک دست‌نخورده می‌ماند)\n\n"
+            "🔓 <b>ادمین کل (سراسری):</b>\n"
+            "• <code>افزودن ادمین کل</code> (ریپلای، فقط مالک ربات) → دسترسی کامل در همهٔ گروه‌ها\n"
+            "• <code>حذف ادمین کل</code> (مالک ربات، یا همان کسی که ارتقا داده)\n"
             "• <code>لیست ادمین های کل</code> (فقط مالک ربات)"
         ),
     },
@@ -156,15 +150,15 @@ SECTIONS = {
             "• <code>تنظیم مدت سکوت اسپم [عدد به دقیقه]</code> → مدت سکوت خودکار اسپم‌کننده\n"
             "• <code>تنظیمات اسپم</code> → نمایش تنظیمات فعلی\n\n"
             "هر گروه تنظیمات مستقل خودش را دارد.\n\n"
-            "قفل‌های محتوا (پیش‌فرض: لینک و فوروارد روشن، بقیه خاموش) از پنل قابل تغییرند - "
-            "بخش «پنل تنظیمات» را ببینید.\n\n"
-            "🔒 <b>قفل فحش</b> (پیش‌فرض: خاموش، جدا از قفل‌های بالا): یک دیتاست عمومی فحش فارسی دارد که "
-            "ممکن است گاهی کلمات بی‌گناه را هم بگیرد - برای همین باید از پنل روشنش کنید و می‌توانید "
-            "برای این گروه سفارشی‌اش کنید:\n"
+            "🔒 <b>قفل‌های محتوا</b> (پیش‌فرض: لینک و فوروارد روشن، بقیه خاموش): با دکمهٔ زیر همین‌جا "
+            "روشن/خاموششان کنید - سبز یعنی روشن، قرمز یعنی خاموش.\n\n"
+            "🔒 <b>قفل فحش</b> (پیش‌فرض: خاموش، جدا از قفل‌های بالا): از همون دکمه هم روشن/خاموش می‌شود؛ "
+            "از یک دیتاست عمومی فحش فارسی استفاده می‌کند که ممکن است گاهی کلمات بی‌گناه را هم بگیرد، برای "
+            "همین می‌توانید برای این گروه سفارشی‌اش کنید:\n"
             "• <code>افزودن فحش [کلمه]</code> → این کلمه را هم فحش حساب کن\n"
-            "• <code>حذف فحش [کلمه]</code> → این کلمه دیگر فحش نیست (چه از لیست پایه، چه اضافه‌شدهٔ خودتان)\n"
-            "• <code>لیست فحش</code> → نمایش سفارشی‌سازی‌های همین گروه (نه کل لیست پایه)\n\n"
-            "⚠️ توجه: این کاملاً از «کلمه فیلتر» جداست - لیست کلمه با هم مشترک نیست."
+            "• <code>حذف فحش [کلمه]</code> → این کلمه دیگر فحش نیست\n"
+            "• <code>لیست فحش</code> → نمایش سفارشی‌سازی‌های همین گروه\n\n"
+            + hcite("توجه: «قفل فحش» کاملاً از «کلمه فیلتر» جداست - لیست کلمه با هم مشترک نیست.", escape=False)
         ),
     },
     "captcha": {
@@ -174,8 +168,7 @@ SECTIONS = {
             "مخصوص گروه‌هایی که «تایید درخواست عضویت» تلگرام را فعال کرده‌اند. وقتی روشن باشد، "
             "ربات برای هرکسی که درخواست عضویت می‌دهد یک سؤال ریاضی ساده در پیوی می‌فرستد؛ اگر ظرف "
             "۱ دقیقه درست جواب دهد درخواستش خودکار تایید می‌شود، وگرنه رد می‌شود.\n\n"
-            "• <code>روشن کردن کپچا</code>\n"
-            "• <code>خاموش کردن کپچا</code>"
+            "با دکمهٔ زیر همین‌جا روشن/خاموشش کنید - سبز یعنی روشن، قرمز یعنی خاموش."
         ),
     },
     "stats": {
@@ -209,10 +202,25 @@ def _main_keyboard(invoker_id: int) -> InlineKeyboardMarkup:
     return kb
 
 
-def _section_keyboard(invoker_id: int) -> InlineKeyboardMarkup:
+def _section_keyboard(invoker_id: int, key: str = None) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup()
+    extra = SECTION_ACTION_BUTTONS.get(key)
+    if extra:
+        label, panel_parts = extra
+        kb.add(InlineKeyboardButton(label, callback_data=panel_encode(invoker_id, *panel_parts)))
     kb.add(InlineKeyboardButton("بازگشت", callback_data=encode(NAMESPACE, invoker_id, "main"), style="danger"))
     return kb
+
+
+# Sections that link straight into a live /پنل screen instead of just
+# describing the feature in text - tapping these re-verifies admin status
+# (see utils/panel_auth.verify_panel_callback) exactly like opening /پنل
+# directly would, so a non-admin tapping it just gets the same "دسترسی
+# مدیریتی ندارید" alert rather than actually toggling anything.
+SECTION_ACTION_BUTTONS = {
+    "spam": ("🔒 روشن/خاموش کردن قفل‌ها", ("locks",)),
+    "captcha": ("🤖 روشن/خاموش کردن کپچا", ("settings",)),
+}
 
 
 async def send_help(chat_id: int, invoker_id: int, reply_to_message_id: int = None):
@@ -263,14 +271,18 @@ async def help_show_section(call: CallbackQuery):
     key = parts[1]
     section = SECTIONS[key]
     await bot.answer_callback_query(call.id)
-    kb = _section_keyboard(invoker_id)
+    kb = _section_keyboard(invoker_id, key)
+    chat_id = call.message.chat.id
+    msg_id = call.message.message_id
     if is_banner_message(call.message.content_type):
-        await bot.edit_message_caption(
-            caption=section["text"], chat_id=call.message.chat.id,
-            message_id=call.message.message_id, reply_markup=kb,
-        )
+        try:
+            await bot.edit_message_caption(caption=section["text"], chat_id=chat_id, message_id=msg_id, reply_markup=kb)
+        except Exception:
+            # A photo/video/GIF caption is capped at 1024 characters by
+            # Telegram (a plain message's text can go up to 4096), so a
+            # longer section here would otherwise leave the button looking
+            # dead - fall back to a normal text message instead of failing
+            # silently.
+            await bot.send_message(chat_id, section["text"], reply_markup=kb, reply_to_message_id=msg_id)
     else:
-        await bot.edit_message_text(
-            section["text"], chat_id=call.message.chat.id,
-            message_id=call.message.message_id, reply_markup=kb,
-        )
+        await bot.edit_message_text(section["text"], chat_id=chat_id, message_id=msg_id, reply_markup=kb)
