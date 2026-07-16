@@ -81,8 +81,10 @@ LIST_WARN_TRIGGERS = {"لیست اخطار", "لیست اخطارها"}
 WARN_LIMIT = 3  # auto-ban after this many active warnings
 
 ADD_FILTER_PREFIX = "افزودن کلمه فیلتر"
+ADD_FILTER_PREFIX_SHORT = "افزودن فیلتر"
 REMOVE_FILTER_PREFIX = "حذف کلمه فیلتر"
-LIST_FILTER_TRIGGERS = {"لیست کلمات فیلتر"}
+REMOVE_FILTER_PREFIX_SHORT = "حذف فیلتر"
+LIST_FILTER_TRIGGERS = {"لیست کلمات فیلتر", "لیست فیلتر"}
 
 SET_WELCOME_PREFIX = "تنظیم خوش آمدگویی"
 WELCOME_ON_TRIGGERS = {"روشن کردن خوش آمدگویی"}
@@ -442,6 +444,8 @@ async def set_vip(message: Message):
     if not target:
         await bot.reply_to(message, messages.get("vip.need_target"))
         return
+    if await _refuse_if_protected(message, target):
+        return
     await db.set_user_role(
         message.chat.id, target.id, "vip",
         username=target.username, first_name=target.first_name, last_name=target.last_name,
@@ -460,6 +464,8 @@ async def unset_vip(message: Message):
     current_role = await db.get_user_role(message.chat.id, target.id)
     if current_role != "vip":
         await bot.reply_to(message, messages.get("vip.not_vip", name=mention(target)))
+        return
+    if await _refuse_if_protected(message, target):
         return
     await db.set_user_role(message.chat.id, target.id, "normal")
     await bot.reply_to(message, messages.get("vip.unset", name=mention(target)))
@@ -650,6 +656,8 @@ async def add_admin(message: Message):
     if not target:
         await bot.reply_to(message, "⚠️ روی پیام کاربری که می‌خواهید ادمین این گروه شود ریپلای کنید.")
         return
+    if await _refuse_if_protected(message, target):
+        return
     await db.set_user_role(
         message.chat.id, target.id, "admin",
         username=target.username, first_name=target.first_name, last_name=target.last_name,
@@ -686,6 +694,8 @@ async def add_owner2(message: Message):
     target = await _resolve_target(message)
     if not target:
         await bot.reply_to(message, "⚠️ روی پیام کاربری که می‌خواهید مالک ۲ این گروه شود ریپلای کنید.")
+        return
+    if await _refuse_if_protected(message, target):
         return
     await db.set_user_role(
         message.chat.id, target.id, "owner2",
@@ -926,31 +936,52 @@ async def list_warn(message: Message):
 # enforced in handlers/antispam.py
 # ---------------------------------------------------------------- #
 
-@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip().startswith(ADD_FILTER_PREFIX))
+@bot.message_handler(
+    chat_types=["group", "supergroup"],
+    func=lambda m: normalize_trigger(m.text or "").strip().startswith(ADD_FILTER_PREFIX)
+    or normalize_trigger(m.text or "").strip().startswith(ADD_FILTER_PREFIX_SHORT),
+)
 async def add_filter_word(message: Message):
     if not await _require_admin(message):
         return
-    word = _norm(message)[len(ADD_FILTER_PREFIX):].strip()
+    text = _norm(message)
+    prefix = ADD_FILTER_PREFIX if text.startswith(ADD_FILTER_PREFIX) else ADD_FILTER_PREFIX_SHORT
+    word = text[len(prefix):].strip()
     if not word:
-        await bot.reply_to(message, "⚠️ فرمت درست: <code>افزودن کلمه فیلتر [کلمه]</code>")
+        await bot.reply_to(
+            message,
+            "⚠️ فرمت درست: <code>افزودن فیلتر [کلمه یا عبارت]</code>\n"
+            "می‌تونی یک کلمه یا یک عبارت طولانی/چند‌کلمه‌ای بدی - هر پیامی که دقیقاً "
+            "همون کلمه/عبارت رو (به‌صورت کامل، نه به‌عنوان بخشی از یک کلمهٔ دیگه) داشته باشه حذف می‌شه.",
+        )
         return
     await db.add_filtered_word(message.chat.id, word, added_by=message.from_user.id)
     chat_config_cache.invalidate(message.chat.id)
-    await bot.reply_to(message, f"✅ کلمهٔ «{word}» به فیلتر این گروه اضافه شد و پیام‌های حاوی آن حذف می‌شوند.")
+    await bot.reply_to(
+        message,
+        f"✅ «{word}» به فیلتر این گروه اضافه شد؛ پیام‌هایی که این کلمه/عبارت را "
+        f"به‌صورت کامل داشته باشند حذف می‌شوند (نه هر کلمه‌ای که فقط شامل آن باشد).",
+    )
 
 
-@bot.message_handler(chat_types=["group", "supergroup"], func=lambda m: normalize_trigger(m.text or "").strip().startswith(REMOVE_FILTER_PREFIX))
+@bot.message_handler(
+    chat_types=["group", "supergroup"],
+    func=lambda m: normalize_trigger(m.text or "").strip().startswith(REMOVE_FILTER_PREFIX)
+    or normalize_trigger(m.text or "").strip().startswith(REMOVE_FILTER_PREFIX_SHORT),
+)
 async def remove_filter_word(message: Message):
     if not await _require_admin(message):
         return
-    word = _norm(message)[len(REMOVE_FILTER_PREFIX):].strip()
+    text = _norm(message)
+    prefix = REMOVE_FILTER_PREFIX if text.startswith(REMOVE_FILTER_PREFIX) else REMOVE_FILTER_PREFIX_SHORT
+    word = text[len(prefix):].strip()
     if not word:
-        await bot.reply_to(message, "⚠️ فرمت درست: <code>حذف کلمه فیلتر [کلمه]</code>")
+        await bot.reply_to(message, "⚠️ فرمت درست: <code>حذف فیلتر [کلمه یا عبارت]</code>")
         return
     removed = await db.remove_filtered_word(message.chat.id, word)
     chat_config_cache.invalidate(message.chat.id)
     if removed:
-        await bot.reply_to(message, f"✅ کلمهٔ «{word}» از فیلتر این گروه حذف شد.")
+        await bot.reply_to(message, f"✅ «{word}» از فیلتر این گروه حذف شد.")
     else:
         await bot.reply_to(message, f"«{word}» در لیست کلمات فیلتر این گروه نبود.")
 

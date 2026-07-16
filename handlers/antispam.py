@@ -13,6 +13,7 @@ in the order they were registered and stops at the first match, so this
 catch-all has to come after every specific command handler.
 """
 
+import re
 import time
 from collections import defaultdict, deque
 from typing import Deque, Dict
@@ -25,6 +26,19 @@ from utils.locks import LOCKS, is_lock_enabled
 from utils.permissions import is_normal_member
 from utils.profanity_words import BASE_PROFANITY_WORDS
 from utils.text import normalize_fa
+
+
+def _contains_whole_word(word: str, text: str) -> bool:
+    """True if `word` (or phrase) appears in `text` as a whole word/phrase -
+    NOT as a substring of a longer word. Prevents e.g. filtering "خر" from
+    also silently deleting messages containing "خرگوش". Both sides are
+    expected to already be normalize_fa()'d and lowercased by the caller.
+    Python's \\b is Unicode-aware for str patterns, so it works correctly
+    on Persian letters too, not just ASCII."""
+    if not word:
+        return False
+    pattern = r"(?<!\w)" + re.escape(word) + r"(?!\w)"
+    return re.search(pattern, text) is not None
 
 # In-memory recent-message timestamps, per chat, per user.
 # Kept in memory (not the DB) on purpose: this is ephemeral, high-frequency
@@ -47,7 +61,7 @@ def _check_filtered_words(message: Message, filtered_words: list) -> bool:
     if not text:
         return False
     lowered = text.lower()
-    return any(normalize_fa(word).lower() in lowered for word in filtered_words)
+    return any(_contains_whole_word(normalize_fa(word).lower(), lowered) for word in filtered_words)
 
 
 def _check_profanity(message: Message, locks_row: dict, profanity_added: list, profanity_removed: list) -> bool:
@@ -64,7 +78,7 @@ def _check_profanity(message: Message, locks_row: dict, profanity_added: list, p
     lowered = text.lower()
     removed_normalized = {normalize_fa(w).lower() for w in profanity_removed}
     effective_words = {normalize_fa(w).lower() for w in BASE_PROFANITY_WORDS | set(profanity_added)} - removed_normalized
-    return any(word and word in lowered for word in effective_words)
+    return any(word and _contains_whole_word(word, lowered) for word in effective_words)
 
 
 async def _check_spam_rate(message: Message, settings: dict) -> bool:

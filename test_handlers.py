@@ -296,6 +296,37 @@ async def test_filtered_word_deletes_message():
 
 
 # ---------------------------------------------------------------- #
+# 10.1) Filtered words must match WHOLE words only, not substrings -
+#       filtering "خر" must NOT also delete "خرگوش".
+# ---------------------------------------------------------------- #
+async def test_filtered_word_is_whole_word_only():
+    from handlers import antispam
+    from utils import chat_config_cache
+
+    await reset()
+    chat_id = 9005
+    chat_config_cache.invalidate(chat_id)
+    core.db.get_chat_locks.return_value = {}
+    core.db.list_filtered_words.return_value = ["خر"]
+    core.db.get_chat_settings.return_value = {"spam_message_limit": 999, "spam_time_window_seconds": 3, "spam_mute_minutes": 30}
+    msg = message(chat_id=chat_id, from_user=user(5), text="خرگوش خیلی بامزه است")
+    msg.content_type = "text"
+    result = await antispam.apply_normal_member_restrictions(msg)
+    check("filtered_word_does_not_match_substring", result is False and not core.bot.delete_message.called)
+
+    await reset()
+    chat_id2 = 9006
+    chat_config_cache.invalidate(chat_id2)
+    core.db.get_chat_locks.return_value = {}
+    core.db.list_filtered_words.return_value = ["خر"]
+    core.db.get_chat_settings.return_value = {"spam_message_limit": 999, "spam_time_window_seconds": 3, "spam_mute_minutes": 30}
+    msg2 = message(chat_id=chat_id2, from_user=user(5), text="تو خیلی خر هستی")
+    msg2.content_type = "text"
+    result2 = await antispam.apply_normal_member_restrictions(msg2)
+    check("filtered_word_still_matches_exact_word", result2 is True and core.bot.delete_message.await_args is not None)
+
+
+# ---------------------------------------------------------------- #
 # 10) Bot lacking admin rights -> friendly explanation, not raw exception
 # ---------------------------------------------------------------- #
 async def test_bot_permission_error_is_translated():
@@ -355,6 +386,32 @@ async def test_ban_protection_respects_hierarchy():
     check("admin_cannot_ban_owner2", not core.bot.ban_chat_member.called)
     reply_text = core.bot.reply_to.await_args.args[1]
     check("admin_cannot_ban_owner2_explains", "رتبه" in reply_text, reply_text)
+
+
+# ---------------------------------------------------------------- #
+# 12.1) "افزودن ادمین"/"تنظیم ویژه" must ALSO respect the hierarchy on
+#       the TARGET, not just on who's allowed to call the command - an
+#       owner2 running "افزودن ادمین" on the actual group OWNER must not
+#       silently downgrade them to admin in the DB.
+# ---------------------------------------------------------------- #
+async def test_add_admin_cannot_target_the_owner():
+    await reset()
+    owner2_actor = user(1, first="Owner2Actor")
+    real_owner = user(7, first="RealOwner")
+    core.db.get_user_role.side_effect = lambda chat_id, uid: "owner2" if uid == 1 else "owner"
+    msg = message(from_user=owner2_actor, text="افزودن ادمین", reply_to_message=message(from_user=real_owner))
+    await admin_commands.add_admin(msg)
+    check("owner2_cannot_demote_owner_via_add_admin", not core.db.set_user_role.called)
+
+
+async def test_set_vip_cannot_target_a_higher_rank():
+    await reset()
+    admin_actor = user(1, first="AdminActor")
+    real_owner = user(7, first="RealOwner")
+    core.db.get_user_role.side_effect = lambda chat_id, uid: "admin" if uid == 1 else "owner"
+    msg = message(from_user=admin_actor, text="تنظیم ویژه", reply_to_message=message(from_user=real_owner))
+    await admin_commands.set_vip(msg)
+    check("admin_cannot_vip_the_owner", not core.db.set_user_role.called)
 
 
 # ---------------------------------------------------------------- #
@@ -522,6 +579,20 @@ async def test_handler_modules_are_not_swapped():
 
 
 # ---------------------------------------------------------------- #
+# 14.1) /start must ignore another bot's @mention - pyTelegramBotAPI's
+#       commands= filter strips "@Anything" and matches "start" regardless
+#       of which bot was tagged, so without an explicit check this bot
+#       would also reply to "/start@SomeOtherBot" in a shared group.
+# ---------------------------------------------------------------- #
+async def test_start_ignores_other_bots_mention():
+    from handlers.start_command import _start_targets_this_bot
+
+    check("start_plain_targets_this_bot", _start_targets_this_bot("/start", "OurBot") is True)
+    check("start_own_mention_targets_this_bot", _start_targets_this_bot("/start@OurBot", "OurBot") is True)
+    check("start_other_mention_ignored", _start_targets_this_bot("/start@SomeOtherBot", "OurBot") is False)
+
+
+# ---------------------------------------------------------------- #
 # 15) Idempotent ban/mute: already-banned/already-muted targets get told
 #     so instead of the bot silently re-applying (or erroring on) the action
 # ---------------------------------------------------------------- #
@@ -643,9 +714,12 @@ async def main():
         test_welcome_message_sent_and_respects_toggle,
         test_lock_deletes_sticker_when_enabled,
         test_filtered_word_deletes_message,
+        test_filtered_word_is_whole_word_only,
         test_bot_permission_error_is_translated,
         test_role_hierarchy_can_assign_role,
         test_ban_protection_respects_hierarchy,
+        test_add_admin_cannot_target_the_owner,
+        test_set_vip_cannot_target_a_higher_rank,
         test_global_admin_cache_grants_full_access,
         test_message_registry_override_and_reset,
         test_ban_sends_registered_banner_instead_of_plain_reply,
@@ -654,6 +728,7 @@ async def main():
         test_set_image_accepts_gif_and_video,
         test_send_banner_helper_directly,
         test_handler_modules_are_not_swapped,
+        test_start_ignores_other_bots_mention,
         test_ban_already_banned,
         test_mute_already_muted,
         test_profanity_lock,

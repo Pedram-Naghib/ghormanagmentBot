@@ -71,8 +71,25 @@ async def _start_keyboard(invoker_id: int) -> InlineKeyboardMarkup:
     return kb
 
 
+def _start_targets_this_bot(text: str, own_username: str) -> bool:
+    """pyTelegramBotAPI's `commands=` filter matches "/start" regardless of
+    which bot is @-mentioned (it strips and ignores the "@..." suffix
+    entirely - see telebot.util.extract_command), so without this check
+    THIS bot would also reply to "/start@SomeOtherBot" sent in a group
+    where multiple bots are present. Only react if there's no @mention at
+    all (a plain "/start"), or it explicitly names THIS bot."""
+    head = (text or "").split()[0] if text else ""
+    if "@" not in head:
+        return True
+    mentioned = head.split("@", 1)[1]
+    return mentioned.lower() == (own_username or "").lower()
+
+
 @bot.message_handler(commands=["start"])
 async def start_command(message: Message):
+    username = await _get_bot_username()
+    if not _start_targets_this_bot(message.text or "", username):
+        return
     invoker_id = message.from_user.id if message.from_user else 0
     text = _start_text(message.from_user.first_name if message.from_user else "")
     keyboard = await _start_keyboard(invoker_id)

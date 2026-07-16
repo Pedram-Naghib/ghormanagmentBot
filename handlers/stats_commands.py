@@ -52,7 +52,7 @@ async def _new_joiners_block(chat_id: int, since) -> str:
     sense in the daily stats context (it's specifically a 24h view), so it
     lives here rather than on every /پروفایل lookup."""
     recent_joins = await db.get_recently_joined_members(chat_id, since=since)
-    top_adders = await db.get_top_adders(chat_id, limit=NEW_JOINERS_TOP_ADDERS_LIMIT)
+    top_adders = await db.get_top_adders(chat_id, since=since, limit=NEW_JOINERS_TOP_ADDERS_LIMIT)
 
     lines = ["\n➖➖➖➖➖➖➖➖➖➖\n🆕 <b>اعضای جدید (۲۴ ساعت اخیر)</b>"]
     if recent_joins:
